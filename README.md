@@ -1,39 +1,46 @@
-﻿# 🎓 Scholarship Professor Finder
+# 🎓 Scholarship Professor Finder
 
-An AI-powered agent that scrapes university faculty pages, filters professors by title and research interests, and generates personalized scholarship outreach emails — all through a conversational CLI.
-
-Built with **Google ADK**, **Gemini**, **BeautifulSoup**, and **Playwright**.
+An AI-powered agent built with **Google ADK (Agent Development Kit)**, **Gemini**, **BeautifulSoup**, and **Playwright** that finds and filters university professors for scholarship outreach through a conversational CLI.
 
 ---
 
-## Features
+## 🎯 Features
 
-- 🔍 **Smart faculty scraping** — works on static and JavaScript-rendered pages (Playwright fallback)
-- 🤖 **LLM-powered data cleaning** — Gemini parses messy scraped text into clean professor profiles
-- 🎯 **Flexible filtering** — filter by academic title and research keywords
-- ✉️ **Personalized email drafts** — generates tailored outreach emails per professor
-- 🔗 **Two-step navigation** — give a general university URL and the agent finds the department page automatically
+- 🏛️ **University Name Resolution & Confirmation** — Give a university name or acronym (e.g. `KIU`, `NUST`, `Stanford`), and the agent resolves its official homepage URL and confirms with you before proceeding.
+- 🔍 **Smart Faculty Scraping** — Deterministic fetching with `requests` + `BeautifulSoup`, with automatic `Playwright` fallback for JavaScript-rendered sites.
+- 🤖 **LLM-Powered Organization & Filtering** — Gemini organizes raw, messy scraped text into structured faculty profiles and filters them by your desired academic titles and research keywords.
+- 🔗 **Two-Step Site Navigation** — Give a general university homepage URL and the agent automatically locates the department faculty page.
+- ⚡ **Direct Department Page Support** — Provide a direct department page URL to skip navigation and scrape immediately.
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 scholarship-scraper/
 ├── main.py            # Entry point — CLI conversation loop
-├── agent.py           # ADK agent + Phases 2, 3, 4 (organize, filter, tools)
-├── scraper.py         # Phase 1 — raw HTML scraping (requests + Playwright)
-├── email_drafter.py   # Phase 5 — personalized email draft generation
+├── agent.py           # Google ADK agent definition, tools, and system prompt
+├── scraper.py         # 3 core tools: resolve_university_url, find_department_page, scrape_faculty_page
 ├── config.py          # Shared config (API key, timeouts, logging)
 ├── requirements.txt   # Python dependencies
 ├── .env.example       # Template for environment variables
-├── logs/              # Scraper and agent logs (auto-created)
-└── output/            # Reserved for saved results (auto-created)
+├── logs/              # Auto-created execution logs
+└── output/            # Auto-created results directory
 ```
 
 ---
 
-## Quickstart
+## 🛠️ The Three Agent Tools
+
+| Tool | Input | Description |
+|---|---|---|
+| `resolve_university_url` | `{ university_name: string }` | Resolves a university name/acronym to its official homepage URL. The agent asks the user for explicit confirmation before proceeding. |
+| `find_department_page` | `{ university_url: string, department: string }` | Navigates the university homepage to locate the specific department faculty listing page. |
+| `scrape_faculty_page` | `{ url: string, department: string }` | Scrapes raw HTML from the department page and extracts unstructured professor data blocks for the LLM to organize and filter. |
+
+---
+
+## 🚀 Quickstart
 
 ### 1. Clone and install dependencies
 
@@ -51,11 +58,7 @@ playwright install chromium
 
 ### 3. Set your Gemini API key
 
-Copy `.env.example` to `.env` and fill in your key:
-
-```bash
-cp .env.example .env
-```
+Create a `.env` file with your Gemini API key:
 
 ```env
 GEMINI_API_KEY=your-gemini-api-key-here
@@ -63,19 +66,7 @@ GEMINI_API_KEY=your-gemini-api-key-here
 
 Get a free API key at [aistudio.google.com](https://aistudio.google.com/app/apikey).
 
-Or set the key directly in your shell:
-
-```powershell
-# PowerShell
-$env:GEMINI_API_KEY = "your-key-here"
-```
-
-```bash
-# bash / zsh
-export GEMINI_API_KEY="your-key-here"
-```
-
-### 4. Run the agent
+### 4. Run the interactive CLI agent
 
 ```bash
 python main.py
@@ -83,109 +74,34 @@ python main.py
 
 ---
 
-## Example Conversation
+## 💬 Example Interaction
 
-```
-======================================================
-  🎓  Scholarship Professor Finder
-======================================================
+```text
+============================================================
+  🎓  Scholarship Professor Finder  
+============================================================
   Type 'exit' or 'quit' to end the session.
-======================================================
+============================================================
 
-Agent: Hi! I'm your scholarship outreach assistant. To get started, please share:
-  - The university URL (homepage or direct department page)
-  - Department name
-  - Your research interest keywords
-  - Preferred academic title(s)
+Agent: Hello! 👋 I'm your scholarship professor finder assistant. Tell me the university name or URL, department, research interests, and preferred academic titles, and I'll find matching professors for you!
 
-You: https://people.cs.uchicago.edu/  Computer Science  machine learning  Assistant Professor
+You: KIU, Computer Science, Machine Learning, Assistant Professors only
 
-🔍 Searching...
+Agent: Are you referring to Karakoram International University at https://www.kiu.edu.pk/?
 
-Agent: ✅ Here are 3 professor(s) I found matching your criteria: ...
+You: Yes
 
-Agent: Would you like me to draft personalized outreach emails for these professors?
+Agent: Got it! Searching the Computer Science department faculty...
 
-You: Yes — my name is Ali Khan, I'm applying for a PhD, background in NLP and Urdu sentiment analysis.
+I found 3 Assistant Professor(s) in Computer Science at Karakoram International University matching your criteria:
 
-✉️ Here are 3 personalized email draft(s): ...
+1. **Dr. Ali Khan** — Assistant Professor
+   - 🔬 **Research:** Machine Learning, NLP, Deep Learning
+   - 📧 **Email:** ali.khan@kiu.edu.pk
+   - 🔗 **Profile:** https://www.kiu.edu.pk/faculty/ali-khan
+
+2. **Dr. Sarah Ahmed** — Assistant Professor
+   - 🔬 **Research:** Computer Vision, Pattern Recognition, ML
+   - 📧 **Email:** sarah.ahmed@kiu.edu.pk
+   - 🔗 **Profile:** https://www.kiu.edu.pk/faculty/sarah-ahmed
 ```
-
----
-
-## How It Works
-
-```
-User Input
-    │
-    ▼
-Phase 1 — scraper.py
-    Fetch HTML (requests → Playwright fallback)
-    Extract raw professor blocks (5-strategy heuristic)
-    │
-    ▼
-Phase 2 — agent.py (_organize_professors)
-    Gemini parses messy text → clean JSON profiles
-    { name, title, research_interests, email, profile_url }
-    │
-    ▼
-Phase 3 — agent.py (_filter_professors)
-    Plain Python: filter by title + research keywords
-    │
-    ▼
-Phase 4 — agent.py (ADK LlmAgent)
-    Orchestrates tools, manages conversation, presents results
-    │
-    ▼
-Phase 5 — email_drafter.py
-    Gemini drafts personalized emails per professor
-    Tailored to student's degree level + research background
-```
-
----
-
-## Configuration
-
-Edit [`config.py`](config.py) to adjust:
-
-| Setting | Default | Description |
-|---|---|---|
-| `MODEL_NAME` | `gemini-2.0-flash` | Gemini model for all LLM calls |
-| `REQUEST_TIMEOUT` | `15` | HTTP request timeout in seconds |
-| `MAX_PROFESSORS` | `50` | Cap on raw scraped results sent to Gemini |
-| `MAX_TOOL_CALLS` | `10` | Guardrail: max tool calls per conversation turn |
-| `MIN_CONTENT_LENGTH` | `500` | Chars threshold below which Playwright is triggered |
-
----
-
-## Scraping Strategy
-
-The scraper tries five strategies in order, using the first that yields results:
-
-1. **CSS class hints** — looks for elements with classes like `faculty`, `card`, `profile`, `member`
-2. **`<article>` tags** — articles containing headings
-3. **Directory lists** — `<ul>`/`<ol>` with directory-hinted class/id
-4. **Table rows** — `<tr>` rows in tables with ≥ 3 rows
-5. **Heading fallback** — extracts all `<h2>`–`<h4>` as names with surrounding text
-
----
-
-## Requirements
-
-- Python 3.10+
-- A [Gemini API key](https://aistudio.google.com/app/apikey) (free tier available)
-- Internet access (for scraping and Gemini API calls)
-
----
-
-## Troubleshooting
-
-**`GEMINI_API_KEY is not set`** — Create a `.env` file from `.env.example` and add your key.
-
-**`Playwright browser not found`** — Run `playwright install chromium`.
-
-**`No professor blocks detected`** — The page structure is unusual. Try providing the direct faculty listing URL (not the department homepage).
-
-**`SSL certificate error`** — The scraper automatically retries with SSL verification disabled for affected sites.
-
-**Empty results after filtering** — Try broadening your search: use fewer keywords, include more title types, or verify the URL points to the faculty listing page.
