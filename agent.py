@@ -88,7 +88,9 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
 # ADK Tool 3: scrape_faculty_page
 # ---------------------------------------------------------------------------
 
-def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
+def scrape_faculty_page(
+    url: str, department: str, desired_titles: str = ""
+) -> dict[str, Any]:
     """
     Scrape raw faculty data blocks from a department faculty listing page.
 
@@ -96,10 +98,13 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
     (either given directly by the user or found via find_department_page).
     This tool fetches the HTML and extracts raw text blocks per professor
     (name, title_text, research_text, email, profile_url).
+    For blocks lacking research details, it automatically scrapes their individual
+    profile pages (up to 20), prioritizing professors matching desired_titles.
 
     Args:
         url: Direct URL to the department faculty/people listing page.
         department: The department name (e.g. 'Computer Science').
+        desired_titles: Optional filter for academic titles (e.g. 'Professor', 'Assistant Professor').
 
     Returns:
         A dict with keys:
@@ -109,9 +114,18 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
           - count: number of raw professor blocks found
           - message: error description (on error)
     """
-    log.info("[ADK tool] scrape_faculty_page called: url=%s dept=%s", url, department)
-    result = _raw_scrape(url, department)
-    log.info("[ADK tool] scrape_faculty_page found %d raw blocks (status=%s)", result.get("count", 0), result.get("status"))
+    log.info(
+        "[ADK tool] scrape_faculty_page called: url=%s dept=%s desired_titles=%r",
+        url,
+        department,
+        desired_titles,
+    )
+    result = _raw_scrape(url, department, desired_titles=desired_titles)
+    log.info(
+        "[ADK tool] scrape_faculty_page found %d raw blocks (status=%s)",
+        result.get("count", 0),
+        result.get("status"),
+    )
     return result
 
 
@@ -149,10 +163,10 @@ On the first turn or if information is missing, greet the user warmly and collec
 
 ### Scenario B: General University URL is given (or confirmed from Scenario A)
 1. If the user provided a general university homepage URL (and NOT a direct department page URL), call `find_department_page(university_url=..., department=...)`.
-2. Once the department URL is returned, call `scrape_faculty_page(url=discovered_department_url, department=...)`.
+2. Once the department URL is returned, call `scrape_faculty_page(url=discovered_department_url, department=..., desired_titles=...)`.
 
 ### Scenario C: Direct Department Faculty Page URL is given
-1. Call `scrape_faculty_page(url=department_url, department=...)` directly, skipping navigation.
+1. Call `scrape_faculty_page(url=department_url, department=..., desired_titles=...)` directly, skipping navigation.
 2. **Automatic Fallback on Failure**: If `scrape_faculty_page` returns an error, 404, or 0 professors for that direct URL, DO NOT give up! Automatically extract the base university or department homepage (e.g., `https://cs.stanford.edu` or `https://www.stanford.edu` from `https://cs.stanford.edu/people/faculty`), call `find_department_page(university_url=base_url, department=department)` to discover the valid active faculty page, and then scrape that discovered URL.
 
 ### Scenario D: Both General University URL and Department URL are given
@@ -171,12 +185,13 @@ You must:
      - **Associate Professor** (includes "Associate Professor of...")
      - **Assistant Professor** (includes "Assistant Professor of...")
      - **Lecturer/Instructor** (includes "Lecturer", "Senior Lecturer", "Teaching Professor", "Instructor")
-   - Extract research interests (e.g., ["Machine Learning", "Computer Vision", "AI", "Systems", "Theory"]). If a summary listing page does not list specific research sub-fields for a professor, infer the broad department focus from context (e.g., "Computer Science") or link to their profile.
+   - Extract research interests (e.g., ["Machine Learning", "Computer Vision", "AI", "Systems", "Theory"]).
    - Extract the email and profile URL (or note "Not listed" if not found in the block).
 2. **Filter Matching Candidates**:
    - Keep professors whose canonical title matches the user's requested title(s) (e.g., "Professor").
-   - AND whose research interests match the user's requested keywords (or are in the requested department).
-   - If the user requested specific titles (e.g. "Professor") and research keywords (e.g. "Computer Vision", "Machine Learning"), present all matching professors found.
+   - If the user specified research keywords (e.g. "Machine Learning", "Computer Vision"): keep only professors whose `research_text` contains matching keywords (case-insensitive).
+   - If a professor has no profile_url and no research-interest text found anywhere: include them with `Research: Not listed — see profile` UNLESS the user gave a specific research keyword (in which case only include if actual matching text is found).
+   - If the user did not specify title or keyword restrictions, include all faculty found.
 
 
 ## PRESENTING RESULTS

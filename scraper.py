@@ -28,6 +28,7 @@ Fetching strategy:
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import time
@@ -39,7 +40,9 @@ from bs4 import BeautifulSoup
 
 from config import (
     MAX_PROFESSORS,
+    MAX_PROFILE_FETCHES,
     MIN_CONTENT_LENGTH,
+    PROFILE_FETCH_DELAY,
     REQUEST_TIMEOUT,
     scraper_logger as log,
 )
@@ -377,8 +380,73 @@ def _tokenize_department(department: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Tool 1 — resolve_university_url
+# Tool 1 — resolve_university_url & Plausibility Validation
 # ---------------------------------------------------------------------------
+
+_GENERIC_UNIVERSITY_STOP_WORDS = {
+    "university", "college", "institute", "school", "technical",
+    "technology", "of", "and", "the", "for", "in", "at", "sciences", "science"
+}
+
+
+def _clean_university_tokens(text: str) -> list[str]:
+    """Extract meaningful distinct tokens from a university name, stripping generic words."""
+    return [
+        t for t in re.findall(r"[a-z0-9]+", text.lower())
+        if t not in _GENERIC_UNIVERSITY_STOP_WORDS and len(t) > 1
+    ]
+
+
+def _is_plausible_university_match(query: str, resolved_title: str, candidate_url: str = "") -> bool:
+    """
+    Check if a resolved university candidate plausibly matches the user's query.
+    Prevents false-positive matches for nonexistent/fake universities.
+    """
+    q_norm = query.strip().lower()
+    t_norm = (resolved_title or "").strip().lower()
+    if not q_norm or not t_norm:
+        return False
+
+    # Exact or full substring match
+    if q_norm == t_norm or q_norm in t_norm or t_norm in q_norm:
+        return True
+
+    q_distinct = _clean_university_tokens(q_norm)
+    t_distinct = _clean_university_tokens(t_norm)
+
+    domain = urllib.parse.urlparse(candidate_url).netloc.lower() if candidate_url else ""
+    dom_tokens = _clean_university_tokens(domain.replace(".", " ").replace("-", " "))
+
+    if q_distinct:
+        matched_tokens = 0
+        for q_tok in q_distinct:
+            tok_matched = False
+            # Check domain name (e.g. 'stanford' in 'stanford.edu')
+            if any(q_tok in d_tok or (len(d_tok) >= 4 and d_tok in q_tok) for d_tok in dom_tokens):
+                tok_matched = True
+            else:
+                # Check candidate title tokens
+                for t_tok in t_distinct:
+                    if q_tok == t_tok or (len(q_tok) >= 4 and (q_tok in t_tok or t_tok in q_tok)):
+                        tok_matched = True
+                        break
+                    if len(q_tok) >= 5 and difflib.SequenceMatcher(None, q_tok, t_tok).ratio() >= 0.85:
+                        tok_matched = True
+                        break
+            if tok_matched:
+                matched_tokens += 1
+
+        if matched_tokens > 0 and (matched_tokens == len(q_distinct) or matched_tokens / len(q_distinct) >= 0.66):
+            return True
+
+    # Acronym matching (e.g. MIT -> Massachusetts Institute of Technology)
+    if len(q_norm) <= 6 and q_norm.isalpha():
+        acronym = "".join(w[0] for w in re.findall(r"[a-z]+", t_norm) if w not in {"of", "and", "the", "for", "in", "at"})
+        if q_norm == acronym or q_norm in acronym:
+            return True
+
+    return False
+
 
 def _lookup_wikipedia_university(name: str) -> tuple[str, str | None, list[str]]:
     """
@@ -408,6 +476,8 @@ def _lookup_wikipedia_university(name: str) -> tuple[str, str | None, list[str]]
 
         # Check the top 2 matching article titles
         for title in titles[:2]:
+            if not _is_plausible_university_match(name, title):
+                continue
             query_params = {
                 "action": "query",
                 "titles": title,
@@ -464,8 +534,8 @@ def _lookup_wikipedia_university(name: str) -> tuple[str, str | None, list[str]]
         return name, None, []
 
 
-def _search_ddg_university(name: str) -> list[str]:
-    """Search DuckDuckGo HTML for university website candidates."""
+def _search_ddg_university(name: str) -> list[tuple[str, str]]:
+    """Search DuckDuckGo HTML for university website candidates, validating plausibility."""
     try:
         query = f"{name} official website university homepage"
         search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
@@ -473,19 +543,29 @@ def _search_ddg_university(name: str) -> list[str]:
         if not resp.ok:
             return []
         soup = BeautifulSoup(resp.text, "html.parser")
-        candidates: list[str] = []
-        for a in soup.select("a.result__url"):
-            raw_href = a.get("href", "")
-            if "uddg=" in raw_href:
-                target = urllib.parse.unquote(raw_href.split("uddg=")[1].split("&")[0])
-                parsed = urllib.parse.urlparse(target)
-                if not parsed.scheme or not parsed.netloc:
-                    continue
-                if any(bad in parsed.netloc for bad in ["duckduckgo", "wikipedia", "facebook", "linkedin", "twitter", "x.com", "youtube", "instagram", "tripadvisor"]):
-                    continue
-                base_url = f"{parsed.scheme}://{parsed.netloc}/"
-                if base_url not in candidates:
-                    candidates.append(base_url)
+        candidates: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+        for r in soup.select(".result"):
+            a_url = r.select_one("a.result__url")
+            a_title = r.select_one("a.result__title, a.result__a")
+            if not a_url:
+                continue
+            raw_href = a_url.get("href", "")
+            if "uddg=" not in raw_href:
+                continue
+            target = urllib.parse.unquote(raw_href.split("uddg=")[1].split("&")[0])
+            parsed = urllib.parse.urlparse(target)
+            if not parsed.scheme or not parsed.netloc:
+                continue
+            if any(bad in parsed.netloc for bad in ["duckduckgo", "wikipedia", "facebook", "linkedin", "twitter", "x.com", "youtube", "instagram", "tripadvisor"]):
+                continue
+            base_url = f"{parsed.scheme}://{parsed.netloc}/"
+            if base_url in seen_urls:
+                continue
+            seen_urls.add(base_url)
+            title = a_title.get_text(strip=True) if a_title else ""
+            if _is_plausible_university_match(name, title, base_url):
+                candidates.append((title or name, base_url))
         return candidates[:3]
     except Exception as exc:
         log.warning("DDG search fallback failed for %s: %s", name, exc)
@@ -524,7 +604,7 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
 
     key = name_clean.lower()
 
-    # 1. Curated / direct mapping
+    # 1. Curated / direct mapping (checked FIRST so acronyms/abbreviations work instantly)
     if key in _CURATED_UNIVERSITIES:
         entry = _CURATED_UNIVERSITIES[key]
         log.info("[resolve_university_url] Curated match for %r: %s", key, entry["url"])
@@ -535,9 +615,9 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
             "candidates": [entry["url"]],
         }
 
-    # 2. Wikipedia / Wikidata lookup
+    # 2. Wikipedia / Wikidata lookup (validated with plausibility check)
     wiki_title, wiki_url, wiki_candidates = _lookup_wikipedia_university(name_clean)
-    if wiki_url:
+    if wiki_url and _is_plausible_university_match(name_clean, wiki_title, wiki_url):
         log.info("[resolve_university_url] Wikipedia match: %s -> %s", wiki_title, wiki_url)
         return {
             "status": "success",
@@ -546,37 +626,99 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
             "candidates": wiki_candidates or [wiki_url],
         }
 
-    # 3. DuckDuckGo search lookup fallback
+    # 3. DuckDuckGo search lookup fallback (validated with plausibility check)
     ddg_candidates = _search_ddg_university(name_clean)
     if ddg_candidates:
-        log.info("[resolve_university_url] DDG match for %r: %s", name_clean, ddg_candidates[0])
+        resolved_name, primary_url = ddg_candidates[0]
+        candidate_urls = [u for _, u in ddg_candidates]
+        log.info("[resolve_university_url] DDG match for %r: %s (%s)", name_clean, resolved_name, primary_url)
         return {
             "status": "success",
-            "university_name": name_clean,
-            "university_url": ddg_candidates[0],
-            "candidates": ddg_candidates,
+            "university_name": resolved_name,
+            "university_url": primary_url,
+            "candidates": candidate_urls,
         }
 
+    log.info("[resolve_university_url] No confident match found for %r", university_name)
     return {
         "status": "error",
         "message": (
-            f"Could not automatically resolve the official homepage URL for '{university_name}'. "
-            "Please provide the university homepage or department URL directly."
+            f"I couldn't confidently find a university matching '{university_name}'. "
+            "Please check the spelling, or provide the university's website URL directly."
         ),
     }
 
 
 # ---------------------------------------------------------------------------
-# Tool 2 — find_department_page
+# Tool 2 — find_department_page & Search Fallback
 # ---------------------------------------------------------------------------
+
+def _search_department_fallback(
+    university_url: str, department: str, dept_tokens: list[str]
+) -> list[tuple[int, str, str]]:
+    """Search DuckDuckGo HTML for department faculty page candidates on university domain."""
+    parsed_uni = urllib.parse.urlparse(university_url)
+    uni_netloc = parsed_uni.netloc
+    parts = uni_netloc.lower().split(":")[0].split(".")
+    base_dom = ".".join(parts[-2:]) if len(parts) >= 2 else uni_netloc
+    if len(parts) >= 3 and parts[-2] in ["edu", "ac", "org", "gov", "com"]:
+        base_dom = ".".join(parts[-3:])
+
+    queries = [
+        f"site:{base_dom} {department} faculty",
+        f"site:{base_dom} {department} department",
+        f"{base_dom} {department} faculty OR staff directory",
+    ]
+
+    scored: list[tuple[int, str, str]] = []
+    _root_norm = university_url.rstrip("/")
+    _origin_norm = f"{parsed_uni.scheme}://{parsed_uni.netloc}".rstrip("/")
+
+    for query in queries:
+        try:
+            log.info("[find_department_page] Trying search fallback query: %r", query)
+            search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
+            resp = requests.get(search_url, headers=_HEADERS, timeout=REQUEST_TIMEOUT)
+            if not resp.ok:
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for r in soup.select(".result"):
+                a_url = r.select_one("a.result__url")
+                a_title = r.select_one("a.result__title, a.result__a")
+                if not a_url:
+                    continue
+                raw_href = a_url.get("href", "")
+                if "uddg=" not in raw_href:
+                    continue
+                target = urllib.parse.unquote(raw_href.split("uddg=")[1].split("&")[0])
+                parsed_target = urllib.parse.urlparse(target)
+                if not parsed_target.scheme or not parsed_target.netloc:
+                    continue
+                if not _is_same_uni_domain(parsed_target.netloc, uni_netloc):
+                    continue
+                if target.rstrip("/") in (_root_norm, _origin_norm):
+                    continue
+                title_text = a_title.get_text(separator=" ", strip=True) if a_title else ""
+                s = _score_link(target, title_text, dept_tokens, university_url)
+                if s > 0:
+                    scored.append((s, target, title_text))
+            if scored:
+                break
+        except Exception as exc:
+            log.warning("[find_department_page] Search fallback error for query %r: %s", query, exc)
+
+    return scored
+
 
 def find_department_page(university_url: str, department: str) -> dict[str, Any]:
     """
     Locate the department faculty/people listing page from a general university URL.
 
     Navigates the university homepage (and one level deeper if needed) to find
-    the page that lists professors for the given department. Returns the best
-    matching URL or an error message.
+    the page that lists professors for the given department. If homepage scanning
+    does not confidently locate the department page, automatically falls back
+    to web search. Returns the best matching URL or an error message asking the user
+    for a direct link only as the last resort.
 
     Args:
         university_url: The general university homepage URL
@@ -594,7 +736,7 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
     log.info("[find_department_page] university=%s  department=%s", university_url, department)
 
     dept_tokens = _tokenize_department(department)
-    
+
     # Try the given URL first; if it fails or returns minimal content, try root origin
     html = _get_html(university_url)
     target_url = university_url
@@ -649,17 +791,12 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
                 if s > 0:
                     scored.append((s, href, text))
 
-    if not scored:
-        return {
-            "status": "error",
-            "message": "No relevant faculty links found on the university website. "
-                       "Please check the department name or provide the direct faculty listing URL.",
-        }
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top_score, top_url, top_text = scored[0]
-
-    log.info("[find_department_page] Top candidate: score=%d  url=%s (text: %r)", top_score, top_url, top_text[:40])
+    if scored:
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_score, top_url, top_text = scored[0]
+        log.info("[find_department_page] Top candidate from homepage scan: score=%d  url=%s (text: %r)", top_score, top_url, top_text[:40])
+    else:
+        top_score = 0
 
     # If top score is modest (< 12), check if a direct department subdomain exists (e.g. cs.stanford.edu)
     if top_score < 12:
@@ -668,7 +805,7 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
         base_dom = ".".join(d_parts[-2:]) if len(d_parts) >= 2 else parsed_target.netloc
         if len(d_parts) >= 3 and d_parts[-2] in ["edu", "ac", "org", "gov", "com"]:
             base_dom = ".".join(d_parts[-3:])
-        
+
         # Prioritize abbreviations (e.g. 'cs') then full names
         sub_candidates = [t for t in dept_tokens if len(t) <= 4] + [t for t in dept_tokens if len(t) > 4]
         for token in sub_candidates:
@@ -690,42 +827,82 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
                         if s > 0:
                             scored.append((s, href, text))
 
-
         if scored:
             scored.sort(key=lambda x: x[0], reverse=True)
             top_score, top_url, top_text = scored[0]
 
-    # If the top score is modest (< 6), explore one level deeper on the best candidate
-    if top_score < 6:
-        log.info("[find_department_page] Score modest (%d) — exploring one level deeper: %s", top_score, top_url)
-        deeper_html = _get_html(top_url)
-        if deeper_html:
-            deeper_soup = BeautifulSoup(deeper_html, "lxml")
-            deeper_root_norm = top_url.rstrip("/")
-            for tag in deeper_soup.find_all("a", href=True):
-                href = _normalize_url(top_url, tag["href"])
-                parsed_href = urllib.parse.urlparse(href)
-                if not _is_same_uni_domain(parsed_href.netloc, uni_netloc):
-                    continue
-                if href.rstrip("/") in (_root_norm, _origin_norm, deeper_root_norm):
-                    continue
-                text = tag.get_text(separator=" ", strip=True)
-                s = _score_link(href, text, dept_tokens, target_url)
-                if s > 0:
-                    scored.append((s, href, text))
+    # If the top score is modest (< 10), explore candidate subpages (e.g. top faculty/academic pages)
+    if top_score < 10 and scored:
+        log.info("[find_department_page] Score modest (%d) — exploring top candidate subpages deeper", top_score)
+        candidates_to_explore = [u for _, u, _ in scored[:3]]
+        for cand_url in candidates_to_explore:
+            cand_html = _get_html(cand_url)
+            if cand_html:
+                cand_soup = BeautifulSoup(cand_html, "lxml")
+                cand_norm = cand_url.rstrip("/")
+                for tag in cand_soup.find_all("a", href=True):
+                    href = _normalize_url(cand_url, tag["href"])
+                    parsed_href = urllib.parse.urlparse(href)
+                    if not _is_same_uni_domain(parsed_href.netloc, uni_netloc):
+                        continue
+                    if href.rstrip("/") in (_root_norm, _origin_norm, cand_norm):
+                        continue
+                    text = tag.get_text(separator=" ", strip=True)
+                    s = _score_link(href, text, dept_tokens, target_url)
+                    if s > 0:
+                        scored.append((s, href, text))
 
+        if scored:
             scored.sort(key=lambda x: x[0], reverse=True)
             top_score, top_url, top_text = scored[0]
-            log.info("[find_department_page] After deeper search: score=%d  url=%s", top_score, top_url)
+            log.info("[find_department_page] After deeper candidate scan: score=%d  url=%s", top_score, top_url)
 
-    candidates = [{"url": u, "score": s} for s, u, _ in scored[:5]]
+    # Search Fallback: Triggered when homepage-link-scoring fails to find a confident match (score < 10 or empty)
+    method_used = "homepage-scan"
+    if top_score < 10 or not scored:
+        log.info("[find_department_page] Homepage scan score below threshold (%d) — triggering search fallback", top_score)
+        search_candidates = _search_department_fallback(university_url, department, dept_tokens)
+        if search_candidates:
+            search_candidates.sort(key=lambda x: x[0], reverse=True)
+            best_search_score, best_search_url, best_search_text = search_candidates[0]
+            if best_search_score > top_score or not scored:
+                method_used = "search-fallback"
+                scored = search_candidates + scored
+                scored.sort(key=lambda x: x[0], reverse=True)
+                top_score, top_url, top_text = scored[0]
+                log.info(
+                    "[find_department_page] Search fallback discovered candidate: score=%d url=%s (text: %r)",
+                    top_score, top_url, top_text[:40]
+                )
 
+    if not scored or top_score <= 0:
+        log.warning("[find_department_page] Both homepage-scan and search-fallback failed to find faculty page for %r at %s", department, university_url)
+        return {
+            "status": "error",
+            "message": (
+                f"Could not automatically locate the department faculty page for '{department}' on {university_url}. "
+                "Please provide the direct department faculty listing URL."
+            ),
+        }
 
+    top_score, top_url, top_text = scored[0]
+    log.info(
+        "[find_department_page] Successfully located department page via [%s]: score=%d url=%s (text: %r)",
+        method_used, top_score, top_url, top_text[:40]
+    )
+
+    # Deduplicate candidates
+    seen_urls: set[str] = set()
+    unique_candidates: list[dict[str, Any]] = []
+    for s, u, _ in scored:
+        if u not in seen_urls:
+            seen_urls.add(u)
+            unique_candidates.append({"url": u, "score": s})
 
     return {
         "status": "success",
         "department_url": top_url,
-        "candidates": candidates,
+        "candidates": unique_candidates[:5],
     }
 
 
@@ -967,11 +1144,149 @@ def _parse_block(tag, base_url: str) -> dict | None:
     }
 
 
+_RESEARCH_HINT_PATTERNS = re.compile(
+    r"\b(research|interests|specialization|focus|publications|projects|laboratory|lab|group|field|area|topics)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_research_content(text: str) -> bool:
+    """Check if the raw listing block already contains research description."""
+    if len(text) > 250:
+        return True
+    if _RESEARCH_HINT_PATTERNS.search(text):
+        return True
+    return False
+
+
+def _fetch_profile_page_text(profile_url: str) -> tuple[str, str]:
+    """Fetch an individual professor profile page and extract text snippet and email if present.
+    Returns (profile_text, email)."""
+    if not profile_url or not profile_url.startswith(("http://", "https://")):
+        return ("", "")
+
+    html = _fetch_html(profile_url)
+    if not html or len(html) < 150:
+        return ("", "")
+
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+        tag.decompose()
+
+    full_text = soup.get_text(separator=" ", strip=True)
+    if len(full_text) < 40:
+        return ("", "")
+
+    email = _extract_email(full_text, str(soup))
+
+    # Try to extract sections specifically discussing research or about
+    research_snippets = []
+    for heading in soup.find_all(re.compile(r"h[1-6]")):
+        h_text = heading.get_text(separator=" ", strip=True).lower()
+        if any(
+            w in h_text
+            for w in [
+                "research",
+                "interest",
+                "publication",
+                "project",
+                "about",
+                "bio",
+                "overview",
+                "specialization",
+            ]
+        ):
+            curr = heading.next_sibling
+            count = 0
+            while curr and count < 4:
+                if hasattr(curr, "get_text"):
+                    t = curr.get_text(separator=" ", strip=True)
+                    if t:
+                        research_snippets.append(t)
+                        count += 1
+                curr = curr.next_sibling
+
+    if research_snippets:
+        combined = " | ".join(research_snippets)
+        return (combined[:2000], email)
+
+    return (full_text[:1500], email)
+
+
+def _enrich_professors_with_profile_pages(
+    raw_profs: list[dict],
+    desired_titles: str = "",
+    max_fetches: int = MAX_PROFILE_FETCHES,
+) -> list[dict]:
+    """
+    Tier-2 enrichment: For professor blocks that lack research text in the listing page,
+    fetch their individual profile pages up to max_fetches (with rate-limiting delay),
+    prioritizing professors that match desired_titles.
+    """
+    if not raw_profs:
+        return raw_profs
+
+    # Parse desired titles into normalized lowercase keywords
+    title_keywords = [
+        t.strip().lower() for t in re.split(r"[,;|/]", desired_titles) if t.strip()
+    ]
+
+    def _matches_title(prof: dict) -> bool:
+        if not title_keywords:
+            return True
+        t_text = (prof.get("title_text") or "").lower()
+        for kw in title_keywords:
+            if kw in t_text:
+                return True
+        return False
+
+    fetches_done = 0
+    for prof in raw_profs:
+        if fetches_done >= max_fetches:
+            break
+
+        profile_url = prof.get("profile_url", "")
+        # Only fetch if profile_url is valid and listing text has no research content
+        if not profile_url or not profile_url.startswith(("http://", "https://")):
+            continue
+
+        if _has_research_content(prof.get("research_text", "")):
+            continue
+
+        # Check title match filter
+        if not _matches_title(prof):
+            continue
+
+        log.info(
+            "[profile_scrape] Fetching profile page for %s: %s",
+            prof.get("name"),
+            profile_url,
+        )
+        profile_text, profile_email = _fetch_profile_page_text(profile_url)
+        fetches_done += 1
+
+        if profile_text:
+            prof["research_text"] = (
+                f"{prof.get('title_text', '')} | Profile: {profile_text}"
+            )
+        if profile_email and not prof.get("email"):
+            prof["email"] = profile_email
+
+        # Short delay to be polite to university servers
+        time.sleep(PROFILE_FETCH_DELAY)
+
+    if fetches_done > 0:
+        log.info("[profile_scrape] Enriched %d professors with profile page details", fetches_done)
+    return raw_profs
+
+
 # ---------------------------------------------------------------------------
 # Tool 2 — scrape_faculty_page
 # ---------------------------------------------------------------------------
 
-def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
+def scrape_faculty_page(
+    url: str, department: str, desired_titles: str = ""
+) -> dict[str, Any]:
     """
     Scrape a faculty listing page and return raw professor data blocks.
 
@@ -980,9 +1295,14 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
     pages), it automatically falls back to Playwright (headless browser) to render the DOM
     and extract professor blocks using the same block-detection logic.
 
+    For professor blocks that lack detailed research descriptions on the listing page,
+    it automatically follows and scrapes their individual profile pages (up to 20 fetches),
+    prioritizing faculty matching desired_titles.
+
     Args:
         url: Direct URL to the department faculty/people listing page.
         department: Name of the department (used for context/logging).
+        desired_titles: Optional filter for academic titles (e.g. 'Professor', 'Assistant Professor').
 
     Returns:
         A dict with keys:
@@ -992,7 +1312,12 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
           - method: 'BeautifulSoup' or 'Playwright' (on success)
           - message: error description (on error)
     """
-    log.info("[scrape_faculty_page] Starting scrape: url=%s  department=%s", url, department)
+    log.info(
+        "[scrape_faculty_page] Starting scrape: url=%s  department=%s  desired_titles=%r",
+        url,
+        department,
+        desired_titles,
+    )
     start_time = time.monotonic()
 
     # -----------------------------------------------------------------------
@@ -1008,6 +1333,9 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
         raw_profs = _extract_raw_professors(bs_soup, url)
 
     if raw_profs:
+        raw_profs = _enrich_professors_with_profile_pages(
+            raw_profs, desired_titles=desired_titles, max_fetches=MAX_PROFILE_FETCHES
+        )
         elapsed = time.monotonic() - start_time
         log.info(
             "[scrape_faculty_page] Succeeded via BeautifulSoup: found %d professor blocks in %.2fs (url=%s)",
@@ -1038,6 +1366,9 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
         raw_profs = _extract_raw_professors(pw_soup, url)
 
     if raw_profs:
+        raw_profs = _enrich_professors_with_profile_pages(
+            raw_profs, desired_titles=desired_titles, max_fetches=MAX_PROFILE_FETCHES
+        )
         elapsed = time.monotonic() - start_time
         log.info(
             "[scrape_faculty_page] Succeeded via Playwright fallback: found %d professor blocks in %.2fs (url=%s)",
@@ -1070,4 +1401,5 @@ def scrape_faculty_page(url: str, department: str) -> dict[str, Any]:
         ),
         "count": 0,
     }
+
 

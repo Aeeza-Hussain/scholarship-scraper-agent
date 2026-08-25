@@ -90,22 +90,26 @@ async def run_agent_turn(user_input: str, user_id: str, session_id: str) -> str:
         new_message=content,
     ):
         # Count tool calls for the guardrail
-        if hasattr(event, "tool_call") and event.tool_call:
-            tool_call_count += 1
-            log.info(
-                "[guardrail] Tool call #%d in this turn: %s",
-                tool_call_count,
-                getattr(event.tool_call, "name", "unknown"),
-            )
+        func_calls = event.get_function_calls()
+        if func_calls:
+            for fc in func_calls:
+                tool_call_count += 1
+                log.info(
+                    "[guardrail] Tool call #%d in this turn: %s",
+                    tool_call_count,
+                    fc.name or "unknown",
+                )
+                if tool_call_count > MAX_TOOL_CALLS:
+                    log.warning(
+                        "[guardrail] MAX_TOOL_CALLS (%d) exceeded — breaking out of event loop",
+                        MAX_TOOL_CALLS,
+                    )
+                    final_response = (
+                        "⚠️ I seem to be going in circles trying to fetch that page. "
+                        "Could you try providing the direct faculty listing URL instead?"
+                    )
+                    break
             if tool_call_count > MAX_TOOL_CALLS:
-                log.warning(
-                    "[guardrail] MAX_TOOL_CALLS (%d) exceeded — breaking out of event loop",
-                    MAX_TOOL_CALLS,
-                )
-                final_response = (
-                    "⚠️ I seem to be going in circles trying to fetch that page. "
-                    "Could you try providing the direct faculty listing URL instead?"
-                )
                 break
 
         # Capture the final text response

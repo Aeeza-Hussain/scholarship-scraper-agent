@@ -29,6 +29,9 @@ MODEL_NAME: str = "gemini-3.5-flash-lite"
 REQUEST_TIMEOUT: int = 15        # seconds per HTTP request
 MAX_PROFESSORS: int = 50         # cap raw scraped results before sending to LLM
 MAX_TOOL_CALLS: int = 10         # max tool-call events per conversation turn
+MAX_PROFILE_FETCHES: int = 20    # cap individual profile page fetches per search
+PROFILE_FETCH_DELAY: float = 0.3 # seconds delay between profile page requests
+
 
 # ---------------------------------------------------------------------------
 # Playwright fallback threshold

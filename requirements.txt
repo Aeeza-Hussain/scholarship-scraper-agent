@@ -13,3 +13,7 @@ python-dotenv>=1.0.0
 # Playwright — only needed as fallback for JavaScript-rendered pages.
 # After installing, run once: playwright install chromium
 playwright>=1.44.0
+
+# API layer
+fastapi>=0.110.0
+uvicorn>=0.29.0
