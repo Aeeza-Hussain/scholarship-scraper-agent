@@ -21,7 +21,7 @@ load_dotenv(dotenv_path=_ENV_FILE)
 # Gemini / ADK
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-MODEL_NAME: str = "gemini-3.5-flash-lite"
+MODEL_NAME: str = "gemini-3.6-flash"
 
 # ---------------------------------------------------------------------------
 # Scraping limits
