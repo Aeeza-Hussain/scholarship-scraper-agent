@@ -24,7 +24,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from agent import root_agent
+from agent import GLOBAL_GUARD, root_agent
 from config import GEMINI_API_KEY, MAX_TOOL_CALLS, MODEL_NAME, agent_logger as log
 
 # ---------------------------------------------------------------------------
@@ -101,6 +101,8 @@ async def _execute_turn(
     Feeds a user message into the ADK runner for the given session,
     enforcing MAX_TOOL_CALLS per turn. Returns (final_text_reply, total_tool_calls).
     """
+    GLOBAL_GUARD.update_from_text(message_text)
+
     content = types.Content(
         role="user",
         parts=[types.Part.from_text(text=message_text)],
@@ -187,9 +189,22 @@ async def create_session() -> dict[str, str]:
         log.info("[session] Created session user_id=%s session_id=%s", user_id, session_id)
 
         # Kick off with opening greeting
-        greeting, _ = await _execute_turn("hi", user_id, session_id)
+        try:
+            greeting, _ = await _execute_turn("hi", user_id, session_id)
+        except Exception as turn_exc:
+            log.warning("[session] Initial greeting turn fallback (%s)", turn_exc)
+            greeting = ""
+
         if not greeting:
-            greeting = "Hello! I am your Scholarship Professor Finder Assistant. Which university and department are you looking for?"
+            greeting = (
+                "Hello! 👋 I am your Scholarship Professor Finder Assistant. "
+                "I can help you find university faculty members matching your criteria for scholarship outreach.\n\n"
+                "To get started, please share:\n"
+                "1. **University Name or Homepage URL** (e.g., Stanford, NUST, KIU)\n"
+                "2. **Department Name** (e.g., Computer Science, Electrical Engineering)\n"
+                "3. **Research Interest(s)** (e.g., Machine Learning, Quantum Computing, or specify 'All')\n"
+                "4. **Desired Academic Title(s)** (e.g., Assistant Professor, Full Professor, or 'All')"
+            )
 
         return {
             "user_id": user_id,
@@ -198,10 +213,19 @@ async def create_session() -> dict[str, str]:
         }
     except Exception as exc:
         log.error("[session] Failed to initialize session: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create agent session: {str(exc)}",
-        )
+        return {
+            "user_id": user_id,
+            "session_id": session_id,
+            "greeting": (
+                "Hello! 👋 I am your Scholarship Professor Finder Assistant. "
+                "I can help you find university faculty members matching your criteria for scholarship outreach.\n\n"
+                "To get started, please share:\n"
+                "1. **University Name or Homepage URL** (e.g., Stanford, NUST, KIU)\n"
+                "2. **Department Name** (e.g., Computer Science, Electrical Engineering)\n"
+                "3. **Research Interest(s)** (e.g., Machine Learning, Quantum Computing, or specify 'All')\n"
+                "4. **Desired Academic Title(s)** (e.g., Assistant Professor, Full Professor, or 'All')"
+            ),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +418,20 @@ async def chat(request: Request) -> dict[str, Any]:
             "tool_calls_this_turn": tool_calls,
         }
     except Exception as exc:
+        err_str = str(exc)
         log.error("[chat] Error during agent turn: %s", exc, exc_info=True)
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            reply = (
+                "⚠️ **Gemini API Quota Limit Reached (429 Rate Limit)**\n\n"
+                "The free-tier daily request quota for the active Gemini model has been temporarily reached. "
+                "Please wait a few moments for the rate limit window to refresh, or try again shortly."
+            )
+            return {
+                "reply": reply,
+                "session_id": resolved_session_id,
+                "user_id": resolved_user_id,
+                "tool_calls_this_turn": 0,
+            }
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent execution failed: {str(exc)}",

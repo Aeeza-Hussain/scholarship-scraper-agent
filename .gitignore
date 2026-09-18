@@ -69,7 +69,9 @@ nosetests.xml
 coverage.xml
 *.cover
 
-# ── Type checking ─────────────────────────────────────────────────────────────
-.mypy_cache/
-.pytype/
-.pyre/
+# ── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.eslintcache
+

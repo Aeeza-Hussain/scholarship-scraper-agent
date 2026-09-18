@@ -8,7 +8,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
         pass
 if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
     try:
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.replace(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -19,4 +19,3 @@ if str(root_dir) not in sys.path:
 from agent import root_agent
 
 agent = root_agent
-

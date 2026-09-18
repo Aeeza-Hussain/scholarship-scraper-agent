@@ -35,7 +35,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from agent import root_agent
+from agent import GLOBAL_GUARD, root_agent
 from config import GEMINI_API_KEY, MAX_TOOL_CALLS, agent_logger as log
 
 # ---------------------------------------------------------------------------
@@ -74,6 +74,8 @@ async def run_agent_turn(user_input: str, user_id: str, session_id: str) -> str:
 
     Returns the agent's final reply as a string.
     """
+    GLOBAL_GUARD.update_from_text(user_input)
+
     content = types.Content(
         role="user",
         parts=[types.Part(text=user_input)],

@@ -21,16 +21,17 @@ load_dotenv(dotenv_path=_ENV_FILE)
 # Gemini / ADK
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-MODEL_NAME: str = "gemini-3.6-flash"
+MODEL_NAME: str = os.getenv("MODEL_NAME", "gemini-3.6-flash")
 
 # ---------------------------------------------------------------------------
 # Scraping limits
 # ---------------------------------------------------------------------------
-REQUEST_TIMEOUT: int = 15        # seconds per HTTP request
-MAX_PROFESSORS: int = 50         # cap raw scraped results before sending to LLM
+REQUEST_TIMEOUT: int = 3        # seconds per HTTP request
+MAX_PROFESSORS: int = 30         # cap raw scraped results before sending to LLM
 MAX_TOOL_CALLS: int = 10         # max tool-call events per conversation turn
-MAX_PROFILE_FETCHES: int = 20    # cap individual profile page fetches per search
-PROFILE_FETCH_DELAY: float = 0.3 # seconds delay between profile page requests
+MAX_PROFILE_FETCHES: int = 6     # max individual bio subpages to fetch
+PARALLEL_PROFILE_WORKERS: int = 8    # cap individual profile page fetches per search
+PROFILE_FETCH_DELAY: float = 0.05 # seconds delay between profile page requests
 
 
 # ---------------------------------------------------------------------------

@@ -37,12 +37,14 @@ from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import (
     MAX_PROFESSORS,
     MAX_PROFILE_FETCHES,
     MIN_CONTENT_LENGTH,
     PROFILE_FETCH_DELAY,
+    PARALLEL_PROFILE_WORKERS,
     REQUEST_TIMEOUT,
     scraper_logger as log,
 )
