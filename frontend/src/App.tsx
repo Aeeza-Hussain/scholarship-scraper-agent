@@ -14,6 +14,7 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [modelName, setModelName] = useState<string>('gemini-2.5-flash');
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -33,6 +34,14 @@ export const App: React.FC = () => {
     setIsInitializing(true);
     setIsLoading(true);
     setErrorMsg(null);
+
+    // Fetch active model from health check
+    fetch(`${API_BASE}/api/health`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.model) setModelName(data.model);
+      })
+      .catch(() => {});
 
     try {
       const res = await fetch(`${API_BASE}/api/session`, {
@@ -117,6 +126,10 @@ export const App: React.FC = () => {
         );
       }
 
+      if (data.active_model) {
+        setModelName(data.active_model);
+      }
+
       // Parse response text for professor card listings
       const parsed = parseProfessorResponse(replyText);
 
@@ -159,7 +172,7 @@ export const App: React.FC = () => {
       }}
     >
       {/* Top Academic Header */}
-      <Header onNewSearch={initNewSession} isInitializing={isInitializing} />
+      <Header onNewSearch={initNewSession} isInitializing={isInitializing} modelName={modelName} />
 
       {/* Main Conversation Container */}
       <main

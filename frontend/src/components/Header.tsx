@@ -7,7 +7,7 @@ interface HeaderProps {
   modelName?: string;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onNewSearch, isInitializing, modelName = 'gemini-3.6-flash' }) => {
+export const Header: React.FC<HeaderProps> = ({ onNewSearch, isInitializing, modelName = 'gemini-2.5-flash' }) => {
   return (
     <header
       style={{

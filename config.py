@@ -15,13 +15,13 @@ from dotenv import load_dotenv
 # Load .env if present (graceful — no error if file doesn't exist)
 # ---------------------------------------------------------------------------
 _ENV_FILE = pathlib.Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=_ENV_FILE)
+load_dotenv(dotenv_path=_ENV_FILE, override=True)
 
 # ---------------------------------------------------------------------------
 # Gemini / ADK
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-MODEL_NAME: str = os.getenv("MODEL_NAME", "gemini-3.6-flash")
+MODEL_NAME: str = os.getenv("MODEL_NAME", "gemini-3.5-flash-lite")
 
 # ---------------------------------------------------------------------------
 # Scraping limits

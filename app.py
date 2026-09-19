@@ -77,6 +77,7 @@ class ChatResponse(BaseModel):
     session_id: str
     user_id: str
     tool_calls_this_turn: int
+    active_model: str | None = Field(default=None, description="Active Gemini model name")
 
 
 class SessionResponse(BaseModel):
@@ -92,14 +93,51 @@ class HealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helper: Execute a single turn via ADK Runner
+# Multi-Model Quota Failover Pool
+# ---------------------------------------------------------------------------
+MODEL_CANDIDATES = [
+    MODEL_NAME,
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+]
+_seen_models = set()
+MODEL_POOL = [m for m in MODEL_CANDIDATES if not (m in _seen_models or _seen_models.add(m))]
+_active_model_idx = 0
+
+
+def get_active_model() -> str:
+    global _active_model_idx
+    return MODEL_POOL[_active_model_idx % len(MODEL_POOL)]
+
+
+def advance_to_next_model(reason: str = "") -> str:
+    global _active_model_idx
+    prev_model = get_active_model()
+    _active_model_idx = (_active_model_idx + 1) % len(MODEL_POOL)
+    new_model = get_active_model()
+    root_agent.model = new_model
+    log.warning(
+        "[failover] Switched model from %s to %s (reason: %s)",
+        prev_model,
+        new_model,
+        reason,
+    )
+    return new_model
+
+
+# ---------------------------------------------------------------------------
+# Helper: Execute a single turn via ADK Runner with Multi-Model Failover
 # ---------------------------------------------------------------------------
 async def _execute_turn(
     message_text: str, user_id: str, session_id: str
 ) -> tuple[str, int]:
     """
     Feeds a user message into the ADK runner for the given session,
-    enforcing MAX_TOOL_CALLS per turn. Returns (final_text_reply, total_tool_calls).
+    enforcing MAX_TOOL_CALLS per turn. Automatically fails over to alternate
+    Gemini models in MODEL_POOL if a model encounters 429 (quota exceeded) or 503 (high demand).
     """
     GLOBAL_GUARD.update_from_text(message_text)
 
@@ -109,63 +147,104 @@ async def _execute_turn(
     )
 
     log.info(
-        "[turn] user_id=%s session_id=%s input=%r",
+        "[turn] user_id=%s session_id=%s active_model=%s input=%r",
         user_id,
         session_id,
+        get_active_model(),
         message_text,
     )
 
-    total_tool_calls = 0
-    final_reply_chunks: list[str] = []
+    attempts = len(MODEL_POOL)
+    last_exc: Exception | None = None
 
-    async for event in runner.run_async(
-        user_id=user_id,
-        session_id=session_id,
-        new_message=content,
-    ):
-        function_calls = event.get_function_calls()
-        if function_calls:
-            for call in function_calls:
-                total_tool_calls += 1
-                log.info(
-                    "[guardrail] Tool call #%d in turn: %s",
-                    total_tool_calls,
-                    getattr(call, "name", "unknown"),
-                )
+    for attempt in range(attempts):
+        current_model = get_active_model()
+        root_agent.model = current_model
+        total_tool_calls = 0
+        final_reply_chunks: list[str] = []
 
-                if total_tool_calls > MAX_TOOL_CALLS:
-                    log.warning(
-                        "[guardrail] MAX_TOOL_CALLS (%d) exceeded in turn for session %s.",
-                        MAX_TOOL_CALLS,
-                        session_id,
-                    )
-                    return (
-                        f"I have reached the maximum number of tool calls ({MAX_TOOL_CALLS}) for this turn. "
-                        "Please refine your search or provide more specific criteria.",
-                        total_tool_calls,
-                    )
+        try:
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=content,
+            ):
+                function_calls = event.get_function_calls()
+                if function_calls:
+                    for call in function_calls:
+                        total_tool_calls += 1
+                        log.info(
+                            "[guardrail] Tool call #%d in turn: %s",
+                            total_tool_calls,
+                            getattr(call, "name", "unknown"),
+                        )
 
-        if event.content and event.content.parts:
-            for part in event.content.parts:
-                if part.text:
-                    final_reply_chunks.append(part.text)
+                        if total_tool_calls > MAX_TOOL_CALLS:
+                            log.warning(
+                                "[guardrail] MAX_TOOL_CALLS (%d) exceeded in turn for session %s.",
+                                MAX_TOOL_CALLS,
+                                session_id,
+                            )
+                            return (
+                                f"I have reached the maximum number of tool calls ({MAX_TOOL_CALLS}) for this turn. "
+                                "Please refine your search or provide more specific criteria.",
+                                total_tool_calls,
+                            )
 
-    reply_text = "".join(final_reply_chunks).strip()
-    log.info("[turn] Final response collected (%d chars)", len(reply_text))
-    return reply_text, total_tool_calls
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            final_reply_chunks.append(part.text)
+
+            reply_text = "".join(final_reply_chunks).strip()
+            log.info("[turn] Final response collected (%d chars) using %s", len(reply_text), current_model)
+            return reply_text, total_tool_calls
+
+        except Exception as exc:
+            last_exc = exc
+            err_str = str(exc)
+            log.warning(
+                "[turn] Model %s failed (attempt %d/%d): %s",
+                current_model,
+                attempt + 1,
+                attempts,
+                err_str[:120],
+            )
+            # If rate limited (429) or temporary server spike (503), fail over to next model in pool
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "503" in err_str or "UNAVAILABLE" in err_str:
+                if attempt < attempts - 1:
+                    new_model = advance_to_next_model(reason=f"Quota or demand limit on {current_model}")
+                    log.info("[failover] Retrying turn with fallback model: %s", new_model)
+                    continue
+            raise last_exc
+
+    if last_exc:
+        raise last_exc
+    return "I have processed your request.", 0
 
 
 # ---------------------------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------------------------
 
+STANDARD_GREETING = (
+    "Hello! 👋 I am your Scholarship Professor Finder Assistant. "
+    "I can help you find university faculty members matching your criteria for scholarship outreach.\n\n"
+    "To get started, please share:\n"
+    "1. **University Name or Homepage URL** (e.g., Stanford, NUST, KIU)\n"
+    "2. **Department Name** (e.g., Computer Science, Electrical Engineering)\n"
+    "3. **Research Interest(s)** (e.g., Machine Learning, Quantum Computing, or specify 'All')\n"
+    "4. **Desired Academic Title(s)** (e.g., Assistant Professor, Full Professor, or 'All')"
+)
+
+
 @app.get("/health", response_model=HealthResponse)
 @app.get("/api/health", response_model=HealthResponse, include_in_schema=False)
 async def health() -> dict[str, str]:
-    """Health check endpoint returning service status and configured LLM model."""
+    """Health check endpoint returning service status and active LLM model."""
     return {
         "status": "ok",
-        "model": MODEL_NAME,
+        "model": get_active_model(),
         "app_name": APP_NAME,
     }
 
@@ -174,8 +253,8 @@ async def health() -> dict[str, str]:
 @app.post("/api/session", response_model=SessionResponse, status_code=status.HTTP_201_CREATED, include_in_schema=False)
 async def create_session() -> dict[str, str]:
     """
-    Create a fresh ADK agent session, executes the opening kickoff turn,
-    and returns the session identifiers and the agent's greeting.
+    Create a fresh ADK agent session and returns standard greeting immediately
+    without burning LLM quota requests.
     """
     user_id = "user_" + uuid.uuid4().hex[:8]
     session_id = "session_" + uuid.uuid4().hex[:8]
@@ -187,44 +266,17 @@ async def create_session() -> dict[str, str]:
             session_id=session_id,
         )
         log.info("[session] Created session user_id=%s session_id=%s", user_id, session_id)
-
-        # Kick off with opening greeting
-        try:
-            greeting, _ = await _execute_turn("hi", user_id, session_id)
-        except Exception as turn_exc:
-            log.warning("[session] Initial greeting turn fallback (%s)", turn_exc)
-            greeting = ""
-
-        if not greeting:
-            greeting = (
-                "Hello! 👋 I am your Scholarship Professor Finder Assistant. "
-                "I can help you find university faculty members matching your criteria for scholarship outreach.\n\n"
-                "To get started, please share:\n"
-                "1. **University Name or Homepage URL** (e.g., Stanford, NUST, KIU)\n"
-                "2. **Department Name** (e.g., Computer Science, Electrical Engineering)\n"
-                "3. **Research Interest(s)** (e.g., Machine Learning, Quantum Computing, or specify 'All')\n"
-                "4. **Desired Academic Title(s)** (e.g., Assistant Professor, Full Professor, or 'All')"
-            )
-
         return {
             "user_id": user_id,
             "session_id": session_id,
-            "greeting": greeting,
+            "greeting": STANDARD_GREETING,
         }
     except Exception as exc:
         log.error("[session] Failed to initialize session: %s", exc, exc_info=True)
         return {
             "user_id": user_id,
             "session_id": session_id,
-            "greeting": (
-                "Hello! 👋 I am your Scholarship Professor Finder Assistant. "
-                "I can help you find university faculty members matching your criteria for scholarship outreach.\n\n"
-                "To get started, please share:\n"
-                "1. **University Name or Homepage URL** (e.g., Stanford, NUST, KIU)\n"
-                "2. **Department Name** (e.g., Computer Science, Electrical Engineering)\n"
-                "3. **Research Interest(s)** (e.g., Machine Learning, Quantum Computing, or specify 'All')\n"
-                "4. **Desired Academic Title(s)** (e.g., Assistant Professor, Full Professor, or 'All')"
-            ),
+            "greeting": STANDARD_GREETING,
         }
 
 
@@ -416,6 +468,7 @@ async def chat(request: Request) -> dict[str, Any]:
             "session_id": resolved_session_id,
             "user_id": resolved_user_id,
             "tool_calls_this_turn": tool_calls,
+            "active_model": get_active_model(),
         }
     except Exception as exc:
         err_str = str(exc)
@@ -432,7 +485,26 @@ async def chat(request: Request) -> dict[str, Any]:
                 "user_id": resolved_user_id,
                 "tool_calls_this_turn": 0,
             }
+        if "503" in err_str or "UNAVAILABLE" in err_str:
+            reply = (
+                "⚠️ **Gemini High Demand (503 Service Temporarily Unavailable)**\n\n"
+                "Google Gemini is currently experiencing high demand on this model. "
+                "Please send your message again in a few moments."
+            )
+            return {
+                "reply": reply,
+                "session_id": resolved_session_id,
+                "user_id": resolved_user_id,
+                "tool_calls_this_turn": 0,
+            }
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent execution failed: {str(exc)}",
         )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)
+
