@@ -12,10 +12,18 @@ import pathlib
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# Load .env if present (graceful — no error if file doesn't exist)
+# Load .env if present (checks backend/.env and workspace root .env)
 # ---------------------------------------------------------------------------
-_ENV_FILE = pathlib.Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=_ENV_FILE, override=True)
+_BACKEND_DIR = pathlib.Path(__file__).resolve().parent
+_ENV_FILE = _BACKEND_DIR / ".env"
+_ROOT_ENV_FILE = _BACKEND_DIR.parent / ".env"
+
+if _ENV_FILE.exists():
+    load_dotenv(dotenv_path=_ENV_FILE, override=True)
+elif _ROOT_ENV_FILE.exists():
+    load_dotenv(dotenv_path=_ROOT_ENV_FILE, override=True)
+else:
+    load_dotenv(override=True)
 
 # ---------------------------------------------------------------------------
 # Gemini / ADK
@@ -43,7 +51,7 @@ MIN_CONTENT_LENGTH: int = 500
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-LOG_DIR = pathlib.Path("logs")
+LOG_DIR = _BACKEND_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(

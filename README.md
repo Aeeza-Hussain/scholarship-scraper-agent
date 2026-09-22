@@ -17,15 +17,22 @@ An AI-powered agent built with **Google ADK (Agent Development Kit)**, **Gemini*
 ## 📁 Project Structure
 
 ```
-scholarship-scraper/
-├── main.py            # Entry point — CLI conversation loop
-├── agent.py           # Google ADK agent definition, tools, and system prompt
-├── scraper.py         # 3 core tools: resolve_university_url, find_department_page, scrape_faculty_page
-├── config.py          # Shared config (API key, timeouts, logging)
-├── requirements.txt   # Python dependencies
-├── .env.example       # Template for environment variables
-├── logs/              # Auto-created execution logs
-└── output/            # Auto-created results directory
+scholarship-scraper-agent/
+├── backend/                  # FastAPI & Google ADK Agent Backend
+│   ├── app.py                # FastAPI HTTP REST API (port 8001)
+│   ├── agent.py              # Google ADK agent definition & prompt
+│   ├── scraper.py            # Scraping engine (Requests + Playwright)
+│   ├── config.py             # Config & .env loader
+│   ├── main.py               # CLI interactive loop
+│   ├── requirements.txt      # Python dependencies
+│   ├── apps/                 # ADK app definitions
+│   └── logs/                 # Execution logs
+├── frontend/                 # React + TypeScript + Vite UI
+│   ├── src/                  # Components, styles, and parsers
+│   ├── package.json          # Node dependencies & scripts
+│   └── vite.config.ts        # Vite config
+├── .gitignore                # Global git ignore rules
+└── README.md                 # Project documentation
 ```
 
 ---
@@ -66,9 +73,20 @@ GEMINI_API_KEY=your-gemini-api-key-here
 
 Get a free API key at [aistudio.google.com](https://aistudio.google.com/app/apikey).
 
-### 4. Run the interactive CLI agent
+### 4. Run the Full Web Application (Frontend + Backend)
+
+Simply run from the root or frontend folder:
 
 ```bash
+npm run dev
+```
+
+> **Note:** Running `npm run dev` automatically detects and launches the FastAPI backend in the background on port `8001` and connects the React frontend on `http://localhost:5173`. When you exit (Ctrl+C), both are cleanly stopped.
+
+### 5. Alternatively: Run the Standalone Interactive CLI
+
+```bash
+cd backend
 python main.py
 ```
 

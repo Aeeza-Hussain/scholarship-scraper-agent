@@ -1,0 +1,12 @@
+{
+  "name": "scholarship-scraper-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scholarship Professor Finder Agent with FastAPI Backend and React Frontend",
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "frontend": "npm --prefix frontend run dev",
+    "backend": "cd backend && python app.py",
+    "build": "npm --prefix frontend run build"
+  }
+}

@@ -6,7 +6,18 @@ import { LoadingIndicator } from './components/LoadingIndicator';
 import type { ChatMessage, SessionData } from './types';
 import { parseProfessorResponse } from './utils/parser';
 
-const API_BASE = 'http://127.0.0.1:8001';
+// Resilient API caller: Uses Vite dev proxy (/api) to eliminate CORS and network issues,
+// with automatic fallback to direct backend host (http://127.0.0.1:8001).
+const apiFetch = async (path: string, options?: RequestInit): Promise<Response> => {
+  try {
+    const res = await fetch(path, options);
+    // If the proxy handled it or returned a valid HTTP response
+    if (res.status > 0) return res;
+  } catch {
+    // Relative fetch failed, fall through to direct backend URL
+  }
+  return fetch(`http://127.0.0.1:8001${path}`, options);
+};
 
 export const App: React.FC = () => {
   const [session, setSession] = useState<SessionData | null>(null);
@@ -36,7 +47,7 @@ export const App: React.FC = () => {
     setErrorMsg(null);
 
     // Fetch active model from health check
-    fetch(`${API_BASE}/api/health`)
+    apiFetch('/api/health')
       .then((res) => res.json())
       .then((data) => {
         if (data.model) setModelName(data.model);
@@ -44,7 +55,7 @@ export const App: React.FC = () => {
       .catch(() => {});
 
     try {
-      const res = await fetch(`${API_BASE}/api/session`, {
+      const res = await apiFetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -72,7 +83,7 @@ export const App: React.FC = () => {
     } catch (err: any) {
       console.error('Session initialization error:', err);
       setErrorMsg(
-        `Unable to connect to FastAPI backend at ${API_BASE}. Ensure the backend server is running.`
+        'Unable to connect to FastAPI backend at http://127.0.0.1:8001. Ensure the backend server is running.'
       );
     } finally {
       setIsInitializing(false);
@@ -103,7 +114,7 @@ export const App: React.FC = () => {
         session_id: session?.session_id || '',
       };
 
-      const res = await fetch(`${API_BASE}/api/chat`, {
+      const res = await apiFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

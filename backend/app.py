@@ -9,9 +9,15 @@ Exposes REST endpoints for web frontends to interact conversationally with the a
 
 from __future__ import annotations
 
+import pathlib
 import sys
 import uuid
 from typing import Any
+
+# Ensure backend directory is in sys.path
+_BACKEND_DIR = pathlib.Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 # Ensure UTF-8 standard streams on Windows
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -506,5 +512,5 @@ async def chat(request: Request) -> dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True)
+    uvicorn.run("app:app", host="127.0.0.1", port=8001, reload=True, app_dir=str(_BACKEND_DIR))
 

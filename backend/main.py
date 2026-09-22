@@ -24,8 +24,14 @@ Environment:
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import sys
 import uuid
+
+# Ensure backend directory is on sys.path
+_BACKEND_DIR = pathlib.Path(__file__).resolve().parent
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 # Ensure UTF-8 output on Windows (avoids UnicodeEncodeError with emoji)
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
