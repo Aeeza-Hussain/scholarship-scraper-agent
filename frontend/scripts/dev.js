@@ -134,12 +134,18 @@ async function main() {
     killBackend();
   });
 
-  // Start Vite dev server
-  const npxCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  const viteProcess = spawn(npxCmd, ['vite'], {
-    cwd: path.resolve(__dirname, '..'),
-    stdio: 'inherit',
-  });
+  // Start Vite dev server directly via Node.js to avoid Windows EINVAL on batch/.cmd files
+  const viteBin = path.resolve(__dirname, '../node_modules/vite/bin/vite.js');
+  const viteProcess = fs.existsSync(viteBin)
+    ? spawn(process.execPath, [viteBin], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: 'inherit',
+      })
+    : spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', ['vite'], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: 'inherit',
+        shell: true,
+      });
 
   viteProcess.on('exit', (code) => {
     killBackend();
