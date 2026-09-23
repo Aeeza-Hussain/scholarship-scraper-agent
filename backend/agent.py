@@ -97,12 +97,41 @@ def _get_active_user_text_from_stack() -> str | None:
     return None
 
 
+DELEGATION_OR_QUESTION_PATTERNS = [
+    "any department", "all department", "any dept", "all dept",
+    "any one you want", "any one you like", "any one",
+    "you like", "you want", "you choose", "you pick",
+    "choose for me", "pick for me", "pick one", "choose one",
+    "whatever you", "whichever you", "whatever", "whichever",
+    "i don't know", "idk", "recommend", "suggest",
+    "what is", "how are", "who are", "can you", "help me", "tell me",
+    "need to go", "hospital", "doctor", "emergency", "hello", "hi", "hey"
+]
+
+def is_valid_department(val: str | None) -> bool:
+    if not val or not val.strip():
+        return False
+    v = val.strip().lower()
+    if any(p in v for p in DELEGATION_OR_QUESTION_PATTERNS):
+        return False
+    if v in {"any", "all", "none", "no", "yes", "y", "sure", "ok", "okay"}:
+        return False
+    if "?" in v or v.startswith("what") or v.startswith("how") or v.startswith("why"):
+        return False
+    if len(v) < 2 or len(v) > 70:
+        return False
+    words = v.split()
+    if len(words) > 6 and not any(w in v for w in ["department", "school", "faculty", "engineering", "science", "studies"]):
+        return False
+    return True
+
+
 class UserCriteriaGuard:
     """
     Code-level guard that tracks which of the 4 required fields have been
     explicitly provided by the user in this conversation:
       1. University Name/URL (confirmed if resolved from name)
-      2. Department Name
+      2. Department Name (must be a genuine department, not a delegation phrase)
       3. Research Interest(s) (or explicit statement from user wanting all research areas)
       4. Desired Academic Title(s) (or explicit statement from user wanting all titles)
 
@@ -154,20 +183,35 @@ class UserCriteriaGuard:
                 self.university_confirmed = True
                 self.user_provided_fields.add("university_confirmed")
 
-        # 3. Explicit "all" or "any" statements for research or academic titles
-        if any(phrase in text_lower for phrase in ["all research", "any research", "all topics", "all areas", "any topic", "no preference", "all research interests"]):
+        # Check if user is asking the agent to pick a department (delegation) -> strictly reject!
+        if any(phrase in text_lower for phrase in ["any department", "all department", "you pick", "you choose", "choose for me", "pick for me", "whatever department", "whichever department"]):
+            self.department = None
+            self.user_provided_fields.discard("department")
+
+        # 3. Explicit "all" statements for research or academic titles
+        if any(phrase in text_lower for phrase in ["all research", "any research", "all of the res", "all topics", "all areas", "any topic", "no preference", "all research interests"]):
             self.research_interests = "All research areas"
             self.user_provided_fields.add("research_interests")
 
-        if any(phrase in text_lower for phrase in ["all titles", "any title", "all faculty", "all professors", "any academic title", "all academic titles"]):
+        if any(phrase in text_lower for phrase in ["all titles", "all academic titles", "all faculty", "all professors", "any academic title"]):
             self.academic_titles = "All academic titles"
             self.user_provided_fields.add("academic_titles")
+
+        # Check if user says "any one you want", "you pick", "you choose" for titles -> DO NOT set academic_titles!
+        if any(phrase in text_lower for phrase in ["any one you want", "any one you like", "you pick", "you choose", "choose for me"]):
+            self.academic_titles = None
+            self.user_provided_fields.discard("academic_titles")
 
         # 4. Explicit key-value formatted patterns e.g. "Department: CS, Research: ML, Titles: All"
         dept_match = re.search(r"(?:department|dept):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
         if dept_match:
-            self.department = dept_match.group(1).strip()
-            self.user_provided_fields.add("department")
+            candidate_dept = dept_match.group(1).strip()
+            if is_valid_department(candidate_dept):
+                self.department = candidate_dept
+                self.user_provided_fields.add("department")
+            else:
+                self.department = None
+                self.user_provided_fields.discard("department")
 
         res_match = re.search(r"(?:research|interests|topics):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
         if res_match:
@@ -176,8 +220,10 @@ class UserCriteriaGuard:
 
         title_match = re.search(r"(?:title|titles|academic titles):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
         if title_match:
-            self.academic_titles = title_match.group(1).strip()
-            self.user_provided_fields.add("academic_titles")
+            candidate_title = title_match.group(1).strip()
+            if not any(phrase in candidate_title.lower() for phrase in ["any one you want", "you pick", "you choose"]):
+                self.academic_titles = candidate_title
+                self.user_provided_fields.add("academic_titles")
 
         # 5. Position/Comma separated inputs
         parts = [p.strip() for p in text_clean.split(",") if p.strip()]
@@ -192,28 +238,32 @@ class UserCriteriaGuard:
 
             if idx < len(clean_parts) and "department" not in self.user_provided_fields:
                 val = clean_parts[idx]
-                if not self.university_name or val.lower() != self.university_name.lower():
+                if is_valid_department(val):
                     self.department = val
                     self.user_provided_fields.add("department")
                     idx += 1
 
             if idx < len(clean_parts) and "research_interests" not in self.user_provided_fields:
                 val = clean_parts[idx]
-                if val.lower() in {"all", "any", "all topics", "all areas"}:
+                if val.lower() in {"all", "any", "all topics", "all areas", "all of the res"}:
                     self.research_interests = "All research areas"
-                else:
+                    self.user_provided_fields.add("research_interests")
+                    idx += 1
+                elif not any(p in val.lower() for p in DELEGATION_OR_QUESTION_PATTERNS):
                     self.research_interests = val
-                self.user_provided_fields.add("research_interests")
-                idx += 1
+                    self.user_provided_fields.add("research_interests")
+                    idx += 1
 
             if idx < len(clean_parts) and "academic_titles" not in self.user_provided_fields:
                 val = clean_parts[idx]
-                if val.lower() in {"all", "any", "all titles", "all faculty"}:
+                if val.lower() in {"all", "any", "all titles", "all faculty", "all professors"}:
                     self.academic_titles = "All academic titles"
-                else:
+                    self.user_provided_fields.add("academic_titles")
+                    idx += 1
+                elif not any(p in val.lower() for p in DELEGATION_OR_QUESTION_PATTERNS):
                     self.academic_titles = val
-                self.user_provided_fields.add("academic_titles")
-                idx += 1
+                    self.user_provided_fields.add("academic_titles")
+                    idx += 1
 
     def is_fully_ready(self) -> tuple[bool, list[str]]:
         missing = []
@@ -221,8 +271,8 @@ class UserCriteriaGuard:
             missing.append("University Name / URL")
         if "university_confirmed" not in self.user_provided_fields and not self.university_confirmed:
             missing.append("University Confirmation (User must confirm the homepage URL)")
-        if "department" not in self.user_provided_fields or not self.department:
-            missing.append("Department Name")
+        if not is_valid_department(self.department):
+            missing.append("Department Name (You must specify which department to search; the agent cannot pick for you)")
         if "research_interests" not in self.user_provided_fields or not self.research_interests:
             missing.append("Research Interest(s) (or explicit statement from user wanting all research areas)")
         if "academic_titles" not in self.user_provided_fields or not self.academic_titles:
@@ -285,8 +335,18 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
     """
     log.info("[ADK tool] find_department_page called: url=%s dept=%s", university_url, department)
     user_text = _get_active_user_text_from_stack()
-    if user_text:
-        GLOBAL_GUARD.update_from_text(user_text)
+    if not is_valid_department(department):
+        log.warning("[GUARD BLOCKED find_department_page] Invalid or delegated department: %r", department)
+        return {
+            "status": "error",
+            "error_code": "INVALID_DEPARTMENT",
+            "message": (
+                "BLOCKED: The user must explicitly provide a specific department name themselves. "
+                "You cannot choose, guess, or invent a department like 'Computer Science' when the user says "
+                "'any department you like' or 'you pick'. You MUST tell the user: "
+                "'You need to provide them yourself. Please specify which department you would like to explore.'"
+            ),
+        }
 
     # Check code guard
     ready, missing = GLOBAL_GUARD.is_fully_ready()
@@ -331,6 +391,18 @@ def scrape_faculty_page(
     user_text = _get_active_user_text_from_stack()
     if user_text:
         GLOBAL_GUARD.update_from_text(user_text)
+
+    if not is_valid_department(department):
+        log.warning("[GUARD BLOCKED scrape_faculty_page] Invalid department: %r", department)
+        return {
+            "status": "error",
+            "error_code": "INVALID_DEPARTMENT",
+            "message": (
+                "BLOCKED: The user must explicitly provide a specific department name themselves. "
+                "You cannot choose, guess, or invent a department. You MUST tell the user: "
+                "'You need to provide them yourself. Please specify which department you would like to explore.'"
+            ),
+        }
 
     # Check code guard
     ready, missing = GLOBAL_GUARD.is_fully_ready()
@@ -379,13 +451,20 @@ Before calling `find_department_page` or `scrape_faculty_page`, you MUST have re
 4. **Desired Academic Title(s)** — e.g. "Assistant Professor", "Professor", OR an explicit statement from the user that they want all titles (DO NOT default or guess this on your own!)
 
 ### HARD WORKFLOW RULES
-1. **University Confirmation is ONLY University Confirmation**:
+1. **Never Pick, Guess, or Hallucinate Criteria ("You need to provide them yourself")**:
+   - The user CANNOT delegate department selection to you (e.g., "any department you like to search", "any department you want", "you pick", "choose for me", "whatever you want", "any one you want").
+   - If the user asks you to pick a department or says "any department you like", you MUST REFUSE and explicitly reply:
+     "You need to provide them yourself. I cannot choose or guess a department for you because universities have dozens of different departments. Please specify which specific department you want to explore (e.g., Computer Science, Electrical Engineering, Mechanical Engineering, Physics, etc.)."
+   - You are STRICTLY FORBIDDEN from choosing, guessing, or inventing a department (such as "Computer Science") on your own!
+   - If the user says "any one you want" or "you choose" for academic titles, tell them:
+     "You need to provide them yourself, or specify 'all titles' if you would like to search across all faculty ranks."
+2. **University Confirmation is ONLY University Confirmation**:
    Confirming the university homepage (e.g. user saying "yes", "correct", "sure") MUST be treated as ONLY confirming the university homepage. It does NOT grant permission to proceed with searching or scraping if department, research interests, or titles are missing!
-2. **Never Guess or Default Missing Criteria**:
+3. **Never Guess or Default Missing Criteria**:
    You MUST NEVER invent, guess, or default missing department names, research interests, or academic titles.
-3. **Explicit Prompting for Missing Fields**:
+4. **Explicit Prompting for Missing Fields**:
    If the university is confirmed but any of (Department Name, Research Interests, Academic Titles) are still missing, you MUST ask the user for the missing piece(s) in your very next message before taking any further action.
-4. **Code Guard Enforcement**:
+5. **Code Guard Enforcement**:
    The tools `find_department_page` and `scrape_faculty_page` are protected by a code-level guard. If you call them before the user explicitly provides all 4 required inputs, the tools will return a guard block error. Always follow tool error instructions.
 
 ## TOOL ORCHESTRATION & LOGIC WORKFLOW
