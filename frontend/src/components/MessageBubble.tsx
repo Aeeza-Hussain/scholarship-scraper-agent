@@ -10,29 +10,88 @@ interface MessageBubbleProps {
 export const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
   const isUser = message.sender === 'user';
 
-  // Helper to render text with clean basic formatting (bold, URLs, linebreaks)
+  // Helper to render text with clean formatting (bold, URLs, bullet points, numbers)
   const renderFormattedText = (text: string) => {
     if (!text) return null;
 
     return text.split('\n').map((line, idx) => {
-      // Check for bullet points
-      const isBullet = line.trim().startsWith('-') || line.trim().startsWith('*');
-      const cleanLine = isBullet ? line.trim().substring(1).trim() : line;
+      const trimmed = line.trim();
+      const isBullet = trimmed.startsWith('-') || trimmed.startsWith('*') || trimmed.startsWith('•');
+      const numMatch = trimmed.match(/^(\d+)[\.\)]\s*(.*)$/);
 
-      // Replace bold **text**
-      const parts = cleanLine.split(/(\*\*.*?\*\*)/g);
+      let cleanLine = line;
+      let prefixEl: React.ReactNode = null;
+
+      if (isBullet) {
+        cleanLine = trimmed.replace(/^[\-\*\•]\s*/, '');
+        prefixEl = <span style={{ color: '#0F766E', marginRight: '8px', fontWeight: 'bold' }}>•</span>;
+      } else if (numMatch) {
+        cleanLine = numMatch[2];
+        prefixEl = (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '20px',
+              height: '20px',
+              borderRadius: '50%',
+              backgroundColor: '#E0F2FE',
+              color: '#0369A1',
+              fontSize: '0.75rem',
+              fontWeight: 700,
+              marginRight: '8px',
+              flexShrink: 0,
+            }}
+          >
+            {numMatch[1]}
+          </span>
+        );
+      }
+
+      // Split by bold (**...**) and links (https?://...)
+      const parts = cleanLine.split(/(\*\*.*?\*\*|https?:\/\/[^\s\)]+)/g);
 
       const formattedLine = parts.map((part, pIdx) => {
         if (part.startsWith('**') && part.endsWith('**')) {
-          return <strong key={pIdx} style={{ fontWeight: 600, color: '#0F172A' }}>{part.slice(2, -2)}</strong>;
+          return (
+            <strong key={pIdx} style={{ fontWeight: 600, color: isUser ? '#FFFFFF' : '#0F172A' }}>
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        if (part.startsWith('http://') || part.startsWith('https://')) {
+          return (
+            <a
+              key={pIdx}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: isUser ? '#67E8F9' : '#0284C7',
+                textDecoration: 'underline',
+                wordBreak: 'break-all',
+              }}
+            >
+              {part}
+            </a>
+          );
         }
         return part;
       });
 
       return (
-        <div key={idx} style={{ marginBottom: line.trim() === '' ? '8px' : '4px', paddingLeft: isBullet ? '12px' : '0' }}>
-          {isBullet && <span style={{ color: '#0F766E', marginRight: '6px' }}>•</span>}
-          {formattedLine}
+        <div
+          key={idx}
+          style={{
+            marginBottom: trimmed === '' ? '8px' : '4px',
+            paddingLeft: isBullet || numMatch ? '6px' : '0',
+            display: isBullet || numMatch ? 'flex' : 'block',
+            alignItems: 'flex-start',
+          }}
+        >
+          {prefixEl}
+          <div style={{ flex: 1 }}>{formattedLine}</div>
         </div>
       );
     });

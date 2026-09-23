@@ -137,6 +137,10 @@ class UserCriteriaGuard:
         # 1. Direct URL check
         url_match = re.search(r"https?://[^\s]+", text_clean)
         if url_match:
+            new_url = url_match.group(0).rstrip('/')
+            # If user provides a different or new university URL, clear any previous criteria
+            if self.university_url and self.university_url.rstrip('/') != new_url:
+                self.reset()
             self.university_url = url_match.group(0)
             self.university_confirmed = True
             self.user_provided_fields.add("university")
@@ -253,6 +257,9 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
     user_text = _get_active_user_text_from_stack()
     if user_text:
         GLOBAL_GUARD.update_from_text(user_text)
+
+    if GLOBAL_GUARD.university_name and GLOBAL_GUARD.university_name.lower() != university_name.lower():
+        GLOBAL_GUARD.reset()
 
     GLOBAL_GUARD.university_name = university_name
     GLOBAL_GUARD.user_provided_fields.add("university")
@@ -390,6 +397,20 @@ Before calling `find_department_page` or `scrape_faculty_page`, you MUST have re
   3. STOP AND WAIT for explicit confirmation ("yes", "correct").
   4. If user confirms "yes" AND you do not have Department Name, Research Interests, and Academic Titles yet:
      Ask the user to explicitly provide the missing items next! DO NOT call `find_department_page` or `scrape_faculty_page` yet.
+
+### Step 1B: Direct University URL (e.g., https://en.sjtu.edu.cn/)
+- If user provides ONLY a university homepage URL (without department, research, or titles):
+  1. DO NOT call `find_department_page` or `scrape_faculty_page`!
+  2. Acknowledge the university URL and ask for the 3 missing criteria directly and conversationally:
+     "Thank you! To help find the right professors at [University Name or URL], please tell me:
+     1. Which department? (e.g., Computer Science, Electrical Engineering)
+     2. What research interests? (e.g., Machine Learning, Robotics, or specify 'all research areas')
+     3. What academic titles? (e.g., Assistant Professor, or specify 'all titles')"
+  3. STOP AND WAIT for the user's response before searching!
+
+### Strict Rules for Asking Questions:
+- NEVER format missing requirements with dashes like `1. **Department Name** — Required`. Users will mistake this for a professor listing.
+- Always ask directly in conversational text: "Please tell me which department, what research topics, and what academic titles you'd like to search for."
 
 ### Step 2: Department Discovery & Faculty Scraping (ONLY executed when ALL 4 inputs are provided)
 - **Scenario A: General Homepage URL + Department Name**:

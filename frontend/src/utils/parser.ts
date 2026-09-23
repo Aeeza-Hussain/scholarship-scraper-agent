@@ -1,8 +1,41 @@
 import type { Professor } from '../types';
 
+// Non-professor keyword blacklist: If a candidate name contains these, it's a prompt/question, not a person
+const FORBIDDEN_NAME_KEYWORDS = [
+  'department',
+  'dept',
+  'university',
+  'college',
+  'school',
+  'research',
+  'interest',
+  'interests',
+  'academic',
+  'title',
+  'titles',
+  'required',
+  'optional',
+  'please',
+  'provide',
+  'specify',
+  'url',
+  'homepage',
+  'website',
+  'example',
+  'e.g.',
+  'criterion',
+  'criteria',
+  'step',
+  'detail',
+  'details',
+];
+
+// Valid academic titles
+const VALID_TITLE_REGEX = /\b(assistant\s+professor|associate\s+professor|adjunct\s+professor|visiting\s+professor|full\s+professor|professor|lecturer|senior\s+lecturer|instructor|teaching\s+professor|chair\s+professor|dean|fellow|researcher|scientist|faculty\s+member)\b/i;
+
 /**
  * Parses raw text from the agent response to extract structured professor card data
- * if the response contains matching faculty listings.
+ * ONLY if the response contains genuine matching faculty listings.
  */
 export function parseProfessorResponse(text: string): {
   headerText: string;
@@ -10,6 +43,17 @@ export function parseProfessorResponse(text: string): {
   footerText: string;
 } {
   if (!text) return { headerText: '', professors: [], footerText: '' };
+
+  // Quick check: If the text is clearly asking questions or prompt instructions, don't parse as professors
+  const lowerText = text.toLowerCase();
+  const isQuestionOrPrompt =
+    (lowerText.includes('please provide') || lowerText.includes('please share') || lowerText.includes('remaining required details')) &&
+    !lowerText.includes('i found') &&
+    !lowerText.includes('matching your criteria');
+
+  if (isQuestionOrPrompt) {
+    return { headerText: text, professors: [], footerText: '' };
+  }
 
   const lines = text.split('\n');
   const professors: Professor[] = [];
@@ -23,29 +67,37 @@ export function parseProfessorResponse(text: string): {
     const line = lines[i];
     const trimmed = line.trim();
 
-    // Match professor header line: "1. **Dr. Ali Khan** — Assistant Professor" or "1. **Sara Achour** - Assistant Professor"
+    // Match numbered candidate line: "1. **Dr. Ali Khan** — Assistant Professor"
     const profHeaderMatch = trimmed.match(/^\d+[\.\)]\s*(?:\*\*)?(.*?)(?:\*\*)?\s*[\—\–\-]\s*(.*)$/);
 
     if (profHeaderMatch) {
-      inProfSection = true;
-      if (currentProf && currentProf.name) {
-        professors.push(finalizeProf(currentProf, professors.length));
-      }
-
       let rawName = profHeaderMatch[1].replace(/\*\*/g, '').trim();
       let rawTitle = profHeaderMatch[2].replace(/\*\*/g, '').trim();
 
-      // Clean up markdown bolds
+      // Clean up markdown bolds and whitespace
       rawName = rawName.replace(/^[\s\*]+|[\s\*]+$/g, '');
+      const lowerName = rawName.toLowerCase();
 
-      currentProf = {
-        name: rawName,
-        title: rawTitle || 'Faculty Member',
-        research: [],
-        email: '',
-        profileUrl: '',
-      };
-      continue;
+      // Strict Validation: Reject if the name contains question/requirement words
+      const isBlacklisted = FORBIDDEN_NAME_KEYWORDS.some((kw) => lowerName.includes(kw));
+      // Strict Validation: Title must match a legitimate academic title
+      const hasValidTitle = VALID_TITLE_REGEX.test(rawTitle);
+
+      if (!isBlacklisted && hasValidTitle && rawName.length > 2 && rawName.length < 60) {
+        inProfSection = true;
+        if (currentProf && currentProf.name) {
+          professors.push(finalizeProf(currentProf, professors.length));
+        }
+
+        currentProf = {
+          name: rawName,
+          title: rawTitle,
+          research: [],
+          email: '',
+          profileUrl: '',
+        };
+        continue;
+      }
     }
 
     if (inProfSection && currentProf) {
@@ -57,7 +109,7 @@ export function parseProfessorResponse(text: string): {
           const items = rawResearch
             .split(/[,;]/)
             .map((s) => s.trim())
-            .filter((s) => s.length > 0 && s.toLowerCase() !== 'not listed');
+            .filter((s) => s.length > 0 && s.toLowerCase() !== 'not listed' && !s.toLowerCase().includes('required'));
           currentProf.research = items.length > 0 ? items : ['General Research'];
         }
         continue;
@@ -91,7 +143,7 @@ export function parseProfessorResponse(text: string): {
         continue;
       }
 
-      // Non-bullet text after professor list starts
+      // Text after professor list terminates the active professor item
       if (trimmed === '' || (!trimmed.startsWith('-') && !trimmed.startsWith('*') && !trimmed.startsWith('🔬') && !trimmed.startsWith('📧') && !trimmed.startsWith('🔗'))) {
         if (professors.length > 0 && !trimmed.match(/^\d+[\.\)]/)) {
           footerLines.push(line);
@@ -107,6 +159,15 @@ export function parseProfessorResponse(text: string): {
 
   if (currentProf && currentProf.name) {
     professors.push(finalizeProf(currentProf, professors.length));
+  }
+
+  // If no valid professors were detected, treat the entire message as pure text
+  if (professors.length === 0) {
+    return {
+      headerText: text,
+      professors: [],
+      footerText: '',
+    };
   }
 
   return {

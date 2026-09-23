@@ -265,6 +265,9 @@ async def create_session() -> dict[str, str]:
     user_id = "user_" + uuid.uuid4().hex[:8]
     session_id = "session_" + uuid.uuid4().hex[:8]
 
+    # Reset criteria guard for a fresh search session
+    GLOBAL_GUARD.reset()
+
     try:
         await session_service.create_session(
             app_name=APP_NAME,

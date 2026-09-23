@@ -67,16 +67,14 @@ export const App: React.FC = () => {
       const data: SessionData = await res.json();
       setSession(data);
 
-      const parsedGreeting = parseProfessorResponse(data.greeting);
-
       const initialMessage: ChatMessage = {
         id: `msg-0-${Date.now()}`,
         sender: 'assistant',
         text: data.greeting,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        professors: parsedGreeting.professors,
-        headerText: parsedGreeting.headerText,
-        footerText: parsedGreeting.footerText,
+        professors: [],
+        headerText: data.greeting,
+        footerText: '',
       };
 
       setMessages([initialMessage]);
@@ -141,18 +139,20 @@ export const App: React.FC = () => {
         setModelName(data.active_model);
       }
 
-      // Parse response text for professor card listings
+      // Parse response text for professor card listings only if scraping tool was invoked
       const parsed = parseProfessorResponse(replyText);
+      const hasToolCalls = Boolean(data.tool_calls_this_turn && data.tool_calls_this_turn > 0);
+      const validProfessors = hasToolCalls ? parsed.professors : [];
 
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
         sender: 'assistant',
         text: replyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        professors: parsed.professors,
-        headerText: parsed.headerText,
-        footerText: parsed.footerText,
-        toolCallsCount: data.tool_calls_this_turn,
+        professors: validProfessors,
+        headerText: validProfessors.length > 0 ? parsed.headerText : replyText,
+        footerText: validProfessors.length > 0 ? parsed.footerText : '',
+        toolCallsCount: data.tool_calls_this_turn || 0,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
