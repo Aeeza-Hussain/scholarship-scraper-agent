@@ -108,11 +108,24 @@ DELEGATION_OR_QUESTION_PATTERNS = [
     "need to go", "hospital", "doctor", "emergency", "hello", "hi", "hey"
 ]
 
+def is_delegation_pattern(text: str) -> bool:
+    if not text:
+        return False
+    t = text.lower()
+    for p in DELEGATION_OR_QUESTION_PATTERNS:
+        if len(p) <= 3:
+            if re.search(rf"\b{re.escape(p)}\b", t):
+                return True
+        else:
+            if p in t:
+                return True
+    return False
+
 def is_valid_department(val: str | None) -> bool:
     if not val or not val.strip():
         return False
     v = val.strip().lower()
-    if any(p in v for p in DELEGATION_OR_QUESTION_PATTERNS):
+    if is_delegation_pattern(v):
         return False
     if v in {"any", "all", "none", "no", "yes", "y", "sure", "ok", "okay"}:
         return False
@@ -167,7 +180,7 @@ class UserCriteriaGuard:
         url_match = re.search(r"https?://[^\s]+", text_clean)
         if url_match:
             new_url = url_match.group(0).rstrip('/')
-            # If user provides a different or new university URL, clear any previous criteria
+            # If user provides a different or new university URL domain, clear previous criteria
             if self.university_url and self.university_url.rstrip('/') != new_url:
                 self.reset()
             self.university_url = url_match.group(0)
@@ -177,64 +190,101 @@ class UserCriteriaGuard:
 
         # 2. Check for university confirmation if university is set/resolved but pending confirmation
         if (self.university_name or self.university_url) and "university_confirmed" not in self.user_provided_fields:
-            confirm_words = {"yes", "y", "yep", "yeah", "correct", "sure", "confirm", "right", "ok", "okay", "that's right"}
+            confirm_words = {"yes", "y", "yep", "yeah", "correct", "sure", "confirm", "right", "ok", "okay", "that's right", "proceed", "go ahead"}
             words = set(re.findall(r"\b\w+\b", text_lower))
             if words.intersection(confirm_words):
                 self.university_confirmed = True
                 self.user_provided_fields.add("university_confirmed")
 
-        # Check if user is asking the agent to pick a department (delegation) -> strictly reject!
+        # 3. Check if user is asking the agent to pick a department (delegation) -> strictly reject!
         if any(phrase in text_lower for phrase in ["any department", "all department", "you pick", "you choose", "choose for me", "pick for me", "whatever department", "whichever department"]):
             self.department = None
             self.user_provided_fields.discard("department")
 
-        # 3. Explicit "all" statements for research or academic titles
+        # 4. Academic Titles extraction
+        if any(phrase in text_lower for phrase in ["all titles", "all academic titles", "all faculty", "all professors", "any academic title", "all of them", "any title"]):
+            self.academic_titles = "All academic titles"
+            self.user_provided_fields.add("academic_titles")
+        elif any(p in text_lower for p in ["assistant professor", "assistant professors", "asst professor", "asst prof"]):
+            self.academic_titles = "Assistant Professor"
+            self.user_provided_fields.add("academic_titles")
+        elif any(p in text_lower for p in ["associate professor", "associate professors", "assoc professor", "assoc prof"]):
+            self.academic_titles = "Associate Professor"
+            self.user_provided_fields.add("academic_titles")
+        elif any(p in text_lower for p in ["full professor", "full professors", "professors", "professor"]):
+            if not any(prefix in text_lower for prefix in ["assistant", "associate"]):
+                self.academic_titles = "Professor"
+                self.user_provided_fields.add("academic_titles")
+        elif any(p in text_lower for p in ["lecturer", "lecturers", "instructor", "instructors"]):
+            self.academic_titles = "Lecturer"
+            self.user_provided_fields.add("academic_titles")
+        elif any(phrase in text_lower for phrase in ["any one you want", "any one you like", "you pick", "you choose", "choose for me"]):
+            self.academic_titles = None
+            self.user_provided_fields.discard("academic_titles")
+
+        # User says "just do this", "do this", "proceed" when academic title confirmation was asked
+        if any(phrase in text_lower for phrase in ["just do this", "do this", "proceed", "go ahead", "search now", "continue"]):
+            if "academic_titles" not in self.user_provided_fields:
+                self.academic_titles = "Professor"
+                self.user_provided_fields.add("academic_titles")
+
+        # 5. Explicit "all" statements for research
         if any(phrase in text_lower for phrase in ["all research", "any research", "all of the res", "all topics", "all areas", "any topic", "no preference", "all research interests"]):
             self.research_interests = "All research areas"
             self.user_provided_fields.add("research_interests")
 
-        if any(phrase in text_lower for phrase in ["all titles", "all academic titles", "all faculty", "all professors", "any academic title"]):
-            self.academic_titles = "All academic titles"
-            self.user_provided_fields.add("academic_titles")
-
-        # Check if user says "any one you want", "you pick", "you choose" for titles -> DO NOT set academic_titles!
-        if any(phrase in text_lower for phrase in ["any one you want", "any one you like", "you pick", "you choose", "choose for me"]):
-            self.academic_titles = None
-            self.user_provided_fields.discard("academic_titles")
-
-        # 4. Explicit key-value formatted patterns e.g. "Department: CS, Research: ML, Titles: All"
-        dept_match = re.search(r"(?:department|dept):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
+        # 6. Natural language regex extraction for Department
+        dept_match = re.search(r"(?:in|from|of)\s+(?:the\s+)?([A-Za-z\s]+?)\s+(?:department|dept|school|faculty)", text_clean, re.IGNORECASE)
         if dept_match:
             candidate_dept = dept_match.group(1).strip()
             if is_valid_department(candidate_dept):
                 self.department = candidate_dept
                 self.user_provided_fields.add("department")
-            else:
-                self.department = None
-                self.user_provided_fields.discard("department")
+        else:
+            dept_kv = re.search(r"(?:department|dept):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
+            if dept_kv:
+                candidate_dept = dept_kv.group(1).strip()
+                if is_valid_department(candidate_dept):
+                    self.department = candidate_dept
+                    self.user_provided_fields.add("department")
 
-        res_match = re.search(r"(?:research|interests|topics):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
+        # 7. Natural language regex extraction for Research Interests
+        res_match = re.search(r"(?:working on|interested in|research in|researching|focusing on|field of|topics? in|interests?:?)\s*([A-Za-z0-9\s,\-\/]+?)(?:\s+(?:at|with|for|\bwith academic\b)|\s*[,.\n]|$)", text_clean, re.IGNORECASE)
         if res_match:
-            self.research_interests = res_match.group(1).strip()
-            self.user_provided_fields.add("research_interests")
+            candidate_res = res_match.group(1).strip()
+            if not is_delegation_pattern(candidate_res) and len(candidate_res) > 1:
+                self.research_interests = candidate_res
+                self.user_provided_fields.add("research_interests")
+        else:
+            res_kv = re.search(r"(?:research|interests|topics):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
+            if res_kv:
+                candidate_res = res_kv.group(1).strip()
+                if not is_delegation_pattern(candidate_res):
+                    self.research_interests = candidate_res
+                    self.user_provided_fields.add("research_interests")
 
-        title_match = re.search(r"(?:title|titles|academic titles):\s*([^,\.\n]+)", text_clean, re.IGNORECASE)
-        if title_match:
-            candidate_title = title_match.group(1).strip()
-            if not any(phrase in candidate_title.lower() for phrase in ["any one you want", "you pick", "you choose"]):
-                self.academic_titles = candidate_title
-                self.user_provided_fields.add("academic_titles")
+        # 8. Natural language regex extraction for University Name
+        uni_match = re.search(r"(?:at|at the)\s+([A-Za-z0-9\s,\.\(\)]+?)(?:\s+(?:working|in the department|department|with)|\s*[,.\n]|$)", text_clean, re.IGNORECASE)
+        if uni_match and "university" not in self.user_provided_fields and not url_match:
+            candidate_uni = uni_match.group(1).strip()
+            if candidate_uni.lower().startswith("the "):
+                candidate_uni = candidate_uni[4:].strip()
+            if len(candidate_uni.split()) <= 8 and not is_delegation_pattern(candidate_uni):
+                self.university_name = candidate_uni
+                self.user_provided_fields.add("university")
 
-        # 5. Position/Comma separated inputs
+        # 9. Position / Comma separated inputs fallback (e.g. "NUST, Mechanical Engineering, Robotics, Professors")
         parts = [p.strip() for p in text_clean.split(",") if p.strip()]
-        clean_parts = [p for p in parts if p.lower() not in {"yes", "y", "yep", "yeah", "correct", "sure", "ok", "okay"}]
+        clean_parts = [p for p in parts if p.lower() not in {"yes", "y", "yep", "yeah", "correct", "sure", "ok", "okay", "that's right"}]
 
-        if clean_parts:
+        if len(clean_parts) >= 2:
             idx = 0
             if "university" not in self.user_provided_fields and not url_match:
-                self.university_name = clean_parts[0]
-                self.user_provided_fields.add("university")
-                idx += 1
+                first_part = clean_parts[0]
+                if not any(k in first_part.lower() for k in ["department", "dept:", "research:", "title:", "i want", "find"]):
+                    self.university_name = first_part
+                    self.user_provided_fields.add("university")
+                    idx += 1
 
             if idx < len(clean_parts) and "department" not in self.user_provided_fields:
                 val = clean_parts[idx]
@@ -249,7 +299,7 @@ class UserCriteriaGuard:
                     self.research_interests = "All research areas"
                     self.user_provided_fields.add("research_interests")
                     idx += 1
-                elif not any(p in val.lower() for p in DELEGATION_OR_QUESTION_PATTERNS):
+                elif not is_delegation_pattern(val):
                     self.research_interests = val
                     self.user_provided_fields.add("research_interests")
                     idx += 1
@@ -260,10 +310,31 @@ class UserCriteriaGuard:
                     self.academic_titles = "All academic titles"
                     self.user_provided_fields.add("academic_titles")
                     idx += 1
-                elif not any(p in val.lower() for p in DELEGATION_OR_QUESTION_PATTERNS):
+                elif not is_delegation_pattern(val):
                     self.academic_titles = val
                     self.user_provided_fields.add("academic_titles")
                     idx += 1
+        elif len(clean_parts) == 1:
+            val = clean_parts[0]
+            val_lower = val.lower()
+            if "university" not in self.user_provided_fields and not self.university_url and not self.university_name:
+                if not is_delegation_pattern(val) and len(val) >= 2:
+                    self.university_name = val
+                    self.user_provided_fields.add("university")
+            elif is_valid_department(val) and "department" not in self.user_provided_fields:
+                self.department = val
+                self.user_provided_fields.add("department")
+            elif "academic_titles" not in self.user_provided_fields and any(t in val_lower for t in ["professor", "lecturer", "faculty"]):
+                if "assistant" in val_lower:
+                    self.academic_titles = "Assistant Professor"
+                elif "associate" in val_lower:
+                    self.academic_titles = "Associate Professor"
+                else:
+                    self.academic_titles = "Professor"
+                self.user_provided_fields.add("academic_titles")
+            elif "research_interests" not in self.user_provided_fields and not is_delegation_pattern(val) and len(val) > 2:
+                self.research_interests = val
+                self.user_provided_fields.add("research_interests")
 
     def is_fully_ready(self) -> tuple[bool, list[str]]:
         missing = []
@@ -308,9 +379,6 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
     if user_text:
         GLOBAL_GUARD.update_from_text(user_text)
 
-    if GLOBAL_GUARD.university_name and GLOBAL_GUARD.university_name.lower() != university_name.lower():
-        GLOBAL_GUARD.reset()
-
     GLOBAL_GUARD.university_name = university_name
     GLOBAL_GUARD.user_provided_fields.add("university")
 
@@ -335,7 +403,14 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
     """
     log.info("[ADK tool] find_department_page called: url=%s dept=%s", university_url, department)
     user_text = _get_active_user_text_from_stack()
-    if not is_valid_department(department):
+    if user_text:
+        GLOBAL_GUARD.update_from_text(user_text)
+
+    # Sync valid department into guard if provided
+    if is_valid_department(department):
+        GLOBAL_GUARD.department = department
+        GLOBAL_GUARD.user_provided_fields.add("department")
+    else:
         log.warning("[GUARD BLOCKED find_department_page] Invalid or delegated department: %r", department)
         return {
             "status": "error",
@@ -358,9 +433,9 @@ def find_department_page(university_url: str, department: str) -> dict[str, Any]
             "missing_fields": missing,
             "message": (
                 "BLOCKED BY CODE GUARD: You CANNOT call find_department_page or scrape_faculty_page yet. "
-                f"The following required pieces of information have NOT been explicitly provided by the user in this conversation: {', '.join(missing)}. "
-                "Confirming the university homepage ONLY confirms the university homepage — it is NOT permission to proceed with scraping. "
-                "You MUST ask the user to explicitly provide the missing piece(s) next before taking any further action!"
+                f"The following required pieces of information have not been recorded yet: {', '.join(missing)}. "
+                "If the user already provided them earlier in the conversation, proceed with those values. "
+                "Otherwise, ask the user to explicitly provide only the missing item(s)."
             ),
         }
 
@@ -392,7 +467,10 @@ def scrape_faculty_page(
     if user_text:
         GLOBAL_GUARD.update_from_text(user_text)
 
-    if not is_valid_department(department):
+    if is_valid_department(department):
+        GLOBAL_GUARD.department = department
+        GLOBAL_GUARD.user_provided_fields.add("department")
+    else:
         log.warning("[GUARD BLOCKED scrape_faculty_page] Invalid department: %r", department)
         return {
             "status": "error",
@@ -404,6 +482,10 @@ def scrape_faculty_page(
             ),
         }
 
+    if desired_titles and not is_delegation_pattern(desired_titles):
+        GLOBAL_GUARD.academic_titles = desired_titles
+        GLOBAL_GUARD.user_provided_fields.add("academic_titles")
+
     # Check code guard
     ready, missing = GLOBAL_GUARD.is_fully_ready()
     if not ready:
@@ -414,9 +496,9 @@ def scrape_faculty_page(
             "missing_fields": missing,
             "message": (
                 "BLOCKED BY CODE GUARD: You CANNOT call scrape_faculty_page yet. "
-                f"The following required pieces of information have NOT been explicitly provided by the user in this conversation: {', '.join(missing)}. "
-                "Confirming the university homepage ONLY confirms the university homepage — it is NOT permission to proceed with scraping. "
-                "You MUST ask the user to explicitly provide the missing piece(s) next before taking any further action!"
+                f"The following required pieces of information have not been recorded yet: {', '.join(missing)}. "
+                "If the user already provided them earlier in the conversation, proceed with those values. "
+                "Otherwise, ask the user to explicitly provide only the missing item(s)."
             ),
         }
 
@@ -446,7 +528,7 @@ You are an AI-powered Scholarship Professor Finder Assistant. Your ONLY job is t
 ## CRITICAL MANDATE: ALL 4 REQUIRED USER INPUTS
 Before calling `find_department_page` or `scrape_faculty_page`, you MUST have received ALL FOUR of the following inputs explicitly provided by the user in this conversation:
 1. **University Name / URL** (confirmed homepage URL if resolved from a name)
-2. **Department Name** (e.g., "Computer Science", "Electrical Engineering") — REQUIRED!
+2. **Department Name** (e.g., "Computer Science", "Electrical Engineering", "Physics") — REQUIRED!
 3. **Research Interest(s)** — explicit research topics OR an explicit statement from the user that they want all research areas (DO NOT default or guess this on your own!)
 4. **Desired Academic Title(s)** — e.g. "Assistant Professor", "Professor", OR an explicit statement from the user that they want all titles (DO NOT default or guess this on your own!)
 
@@ -458,14 +540,22 @@ Before calling `find_department_page` or `scrape_faculty_page`, you MUST have re
    - You are STRICTLY FORBIDDEN from choosing, guessing, or inventing a department (such as "Computer Science") on your own!
    - If the user says "any one you want" or "you choose" for academic titles, tell them:
      "You need to provide them yourself, or specify 'all titles' if you would like to search across all faculty ranks."
-2. **University Confirmation is ONLY University Confirmation**:
-   Confirming the university homepage (e.g. user saying "yes", "correct", "sure") MUST be treated as ONLY confirming the university homepage. It does NOT grant permission to proceed with searching or scraping if department, research interests, or titles are missing!
-3. **Never Guess or Default Missing Criteria**:
-   You MUST NEVER invent, guess, or default missing department names, research interests, or academic titles.
-4. **Explicit Prompting for Missing Fields**:
-   If the university is confirmed but any of (Department Name, Research Interests, Academic Titles) are still missing, you MUST ask the user for the missing piece(s) in your very next message before taking any further action.
-5. **Code Guard Enforcement**:
-   The tools `find_department_page` and `scrape_faculty_page` are protected by a code-level guard. If you call them before the user explicitly provides all 4 required inputs, the tools will return a guard block error. Always follow tool error instructions.
+
+2. **CRITICAL: NEVER RE-ASK REQUIREMENTS THAT THE USER ALREADY PROVIDED**:
+   - Users frequently provide their requirements together in their query (e.g., "NUST, Mechanical Engineering, Robotics, Professors" or "I want professors in the Physics department at KIU working on theoretical physics").
+   - When the user confirms the university homepage with "yes", "correct", "sure", "yep", or "proceed":
+     **DO NOT ASK FOR THE DEPARTMENT, RESEARCH INTERESTS, OR ACADEMIC TITLES AGAIN!**
+     You ALREADY have them from earlier in the conversation!
+     Immediately proceed to Step 2 and call `find_department_page(university_url=..., department=...)` and `scrape_faculty_page` using the criteria the user already gave!
+   - ONLY ask for missing requirements if the user genuinely did NOT provide them anywhere in earlier messages.
+
+3. **Accept Specified Academic Titles Smoothly**:
+   - Accept any title the user specifies (e.g., "Professors", "Professor", "Assistant Professor", "Associate Professor", "Lecturer", or "all titles").
+   - NEVER ask pedantic questions like "do you want to search exclusively for Assistant Professors or all titles?". If the user said "Assistant Professors", search for Assistant Professors! If they said "Professors", search for Professors!
+   - If the user says "just do this", "proceed", "go ahead", "search now", "continue", or confirms their title, IMMEDIATELY execute the search. NEVER ask them to re-type or re-confirm their criteria!
+
+4. **Code Guard Enforcement**:
+   The tools `find_department_page` and `scrape_faculty_page` are protected by a code-level guard. Always pass the user's provided department and titles to the tools.
 
 ## TOOL ORCHESTRATION & LOGIC WORKFLOW
 
@@ -474,8 +564,10 @@ Before calling `find_department_page` or `scrape_faculty_page`, you MUST have re
   1. Call `resolve_university_url(university_name=...)`.
   2. Ask user: "Are you referring to [University Name] at [URL]?"
   3. STOP AND WAIT for explicit confirmation ("yes", "correct").
-  4. If user confirms "yes" AND you do not have Department Name, Research Interests, and Academic Titles yet:
-     Ask the user to explicitly provide the missing items next! DO NOT call `find_department_page` or `scrape_faculty_page` yet.
+  4. When the user confirms "yes":
+     - If the user ALREADY provided Department Name, Research Interests, and Academic Titles (e.g. in the initial message):
+       **DO NOT ASK FOR THEM AGAIN!** Immediately proceed to Step 2 and call `find_department_page(university_url=..., department=...)`.
+     - Only if any of the 3 fields are missing, ask for ONLY the missing piece(s).
 
 ### Step 1B: Direct University URL (e.g., https://en.sjtu.edu.cn/)
 - If user provides ONLY a university homepage URL (without department, research, or titles):

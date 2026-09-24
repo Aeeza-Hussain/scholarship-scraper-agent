@@ -605,10 +605,17 @@ def resolve_university_url(university_name: str) -> dict[str, Any]:
         }
 
     key = name_clean.lower()
+    key_no_paren = re.sub(r"\s*\([^)]*\)", "", key).strip()
+    acronym_match = re.search(r"\(([a-zA-Z]{2,10})\)", key)
+    curated_hit = (
+        _CURATED_UNIVERSITIES.get(key)
+        or _CURATED_UNIVERSITIES.get(key_no_paren)
+        or (_CURATED_UNIVERSITIES.get(acronym_match.group(1).lower()) if acronym_match else None)
+    )
 
     # 1. Curated / direct mapping (checked FIRST so acronyms/abbreviations work instantly)
-    if key in _CURATED_UNIVERSITIES:
-        entry = _CURATED_UNIVERSITIES[key]
+    if curated_hit:
+        entry = curated_hit
         log.info("[resolve_university_url] Curated match for %r: %s", key, entry["url"])
         return {
             "status": "success",
